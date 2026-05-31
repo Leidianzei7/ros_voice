@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ros_voice</name>
+  <version>0.1.0</version>
+  <description>语音交互节点：voice_node 采音+ASR+唤醒词，brain_node 调 LLM 生成指令并 TTS 播报。</description>
+  <maintainer email="lei15988006987@gmail.com">leidianzei7</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

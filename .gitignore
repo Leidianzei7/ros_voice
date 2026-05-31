@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 模型文件（大文件，不入库，需手动放置）
+onnx_model/
+
+# 虚拟环境
+.venv/
+
+# 日志
+*.log
+*.pcm
+
+# IDE
+.vscode/
+.idea/
+
+# ROS build 产物（不会在包内，防御性添加）
+build/
+install/
+log/
