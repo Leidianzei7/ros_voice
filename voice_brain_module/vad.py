@@ -20,14 +20,24 @@ from .config import (
 )
 
 
-def run_vad(audio_q, running, on_speech, log, noise_floor=500.0):
+def _drain_vad(q):
+    while not q.empty():
+        try:
+            q.get_nowait()
+        except queue.Empty:
+            break
+
+
+def run_vad(audio_q, running, on_speech, log, noise_floor=500.0, active=None):
+    if active is None:
+        active = running
     if VAD_MODE == "webrtc":
-        _run_webrtc(audio_q, running, on_speech, log)
+        _run_webrtc(audio_q, running, on_speech, log, active)
     else:
-        _run_energy(audio_q, running, on_speech, log, noise_floor)
+        _run_energy(audio_q, running, on_speech, log, noise_floor, active)
 
 
-def _run_energy(audio_q, running, on_speech, log, noise_floor):
+def _run_energy(audio_q, running, on_speech, log, noise_floor, active):
     threshold     = noise_floor + SPEECH_DELTA
     silence_limit = int(SPEECH_HOLD_SEC * SAMPLE_RATE / CHUNK)
 
@@ -36,6 +46,15 @@ def _run_energy(audio_q, running, on_speech, log, noise_floor):
     silence_cnt = 0
 
     while running.is_set():
+        # TTS 期间暂停（active 清空），排掉缓冲后静待恢复
+        if not active.is_set():
+            _drain_vad(audio_q)
+            speech_buf  = np.array([], dtype=np.float32)
+            in_speech   = False
+            silence_cnt = 0
+            active.wait(0.1)
+            continue
+
         try:
             chunk = audio_q.get(timeout=0.5)
         except queue.Empty:
@@ -67,7 +86,7 @@ def _run_energy(audio_q, running, on_speech, log, noise_floor):
                     speech_buf = np.array([], dtype=np.float32)
 
 
-def _run_webrtc(audio_q, running, on_speech, log):
+def _run_webrtc(audio_q, running, on_speech, log, active):
     import webrtcvad
     vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
 
@@ -84,6 +103,16 @@ def _run_webrtc(audio_q, running, on_speech, log):
     log("WebRTC VAD 就绪，开始监听")
 
     while running.is_set():
+        if not active.is_set():
+            _drain_vad(audio_q)
+            speech_frames = []
+            in_speech     = False
+            silence_cnt   = 0
+            speech_cnt    = 0
+            sample_buf    = np.array([], dtype=np.float32)
+            active.wait(0.1)
+            continue
+
         try:
             chunk = audio_q.get(timeout=0.5)
         except queue.Empty:

@@ -16,7 +16,8 @@ process_command(cmd_text, log, vision_context)
 # 模块级不 import，按需在各函数内惰性导入
 
 
-def listen_for_commands(on_command, log=print, running=None, wake_required_ref=None):
+def listen_for_commands(on_command, log=print, running=None,
+                        wake_required_ref=None, active=None):
     from .audio import run_audio_pipeline
     from .wake_word import find_wake_word
 
@@ -26,14 +27,6 @@ def listen_for_commands(on_command, log=print, running=None, wake_required_ref=N
     waiting = {"flag": False}
 
     def _on_text(text):
-        # TTS 播报期间静音（brain_node 发 mute）
-        if wake_required_ref.get("muted"):
-            return
-        # 刚结束 TTS，跳过第一条识别结果（TTS 回声）
-        if wake_required_ref.get("skip_next"):
-            wake_required_ref["skip_next"] = False
-            return
-
         # 持续监听模式：每句话直接当指令
         if not wake_required_ref["wake_required"]:
             on_command(text)
@@ -51,7 +44,8 @@ def listen_for_commands(on_command, log=print, running=None, wake_required_ref=N
             waiting["flag"] = False
             on_command(text)
 
-    run_audio_pipeline(on_asr_text=_on_text, log=log, running=running)
+    run_audio_pipeline(on_asr_text=_on_text, log=log, running=running,
+                       active=active)
 
 
 def process_command(cmd_text, log=print, vision_context=""):

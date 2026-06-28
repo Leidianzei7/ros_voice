@@ -20,26 +20,25 @@ class VoiceNode(Node):
         self._cmd_pub = self.create_publisher(String, "/voice/command", 10)
         self.create_subscription(String, "/voice/listen_mode", self._on_listen_mode, 10)
 
-        self._listen_mode = {"wake_required": True, "muted": False, "skip_next": False}
+        self._listen_mode = {"wake_required": True}
         self._running = threading.Event()
+        self._active  = threading.Event()
         self._running.set()
+        self._active.set()
 
     def _on_listen_mode(self, msg: String):
         """brain_node 控制监听模式。"""
         if msg.data == "mute":
-            self._listen_mode["muted"] = True
+            self._active.clear()                          # 停止 VAD+ASR
         elif msg.data == "continuous":
             self._listen_mode["wake_required"] = False
-            self._listen_mode["muted"] = False
-            self._listen_mode["skip_next"] = True   # 排掉 TTS 回声
+            self._active.set()                            # 恢复
         else:  # "command"
             self._listen_mode["wake_required"] = True
-            self._listen_mode["muted"] = False
-            self._listen_mode["skip_next"] = True   # 排掉 TTS 回声
+            self._active.set()                            # 恢复
 
     def _on_command(self, cmd: str):
         self.get_logger().info(f"指令: {cmd}")
-        self._listen_mode["wake_required"] = True  # 发出后恢复默认
         self._cmd_pub.publish(String(data=cmd))
 
     def start(self):
@@ -49,6 +48,7 @@ class VoiceNode(Node):
                 "on_command":  self._on_command,
                 "log":         self.get_logger().info,
                 "running":     self._running,
+                "active":      self._active,
                 "wake_required_ref": self._listen_mode,
             },
             daemon=True,

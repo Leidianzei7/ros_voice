@@ -59,8 +59,10 @@ def _calibrate_noise(audio_q, log):
     return noise_floor
 
 
-def run_audio_pipeline(on_asr_text, log=print, running=None):
+def run_audio_pipeline(on_asr_text, log=print, running=None, active=None):
     assert running is not None, "running 参数必须传入 threading.Event"
+    if active is None:
+        active = running
 
     while running.is_set():
         raw_q   = queue.Queue(maxsize=100)
@@ -133,7 +135,7 @@ def run_audio_pipeline(on_asr_text, log=print, running=None):
                     else:
                         log("（未识别到有效内容）")
 
-                run_vad(audio_q, running, _on_speech, log, noise_floor)
+                run_vad(audio_q, running, _on_speech, log, noise_floor, active=active)
         except Exception as e:
             log(f"[音频] 流异常: {e}，1 秒后重试...")
             running.wait(1.0)
