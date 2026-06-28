@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 brain_node: 纯 ROS 层。
-订阅 /voice/command          (std_msgs/String) — 用户指令文本。
-订阅 /vision/scene_objects    (std_msgs/String) — 机械臂视觉返回的当前可见物体(JSON)。
-订阅 /vision/emotion_context  (std_msgs/String) — 当前情绪(JSON)。
-发布 /command                 (std_msgs/String) — JSON 指令数组。
+订阅 /voice/command          — 用户指令文本。
+订阅 /vision/scene_objects    — 桌面物体(JSON)。
+订阅 /vision/emotion_context  — 用户情绪(JSON)。
+发布 /command                 — JSON 指令数组。
+发布 /voice/listen_mode       — 控制 voice_node 监听模式。
 
-感知数据预处理（缓存/去抖/格式化）委托给 voice_brain_module.context.ContextPipeline。
+感知预处理 → ContextPipeline，持久记忆 → UserMemory。
 """
 import json
 import queue
@@ -18,29 +19,29 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from voice_brain_module.context import ContextPipeline
+from voice_brain_module.memory import UserMemory
 from voice_brain_module.pipeline import process_command
 
 
 class BrainNode(Node):
     def __init__(self):
         super().__init__("brain_node")
-        self._instr_pub = self.create_publisher(String, "/command", 10)
+        self._instr_pub    = self.create_publisher(String, "/command", 10)
+        self._listen_pub   = self.create_publisher(String, "/voice/listen_mode", 10)
         self.create_subscription(String, "/voice/command", self._on_command, 10)
-
-        # ── 视觉/情绪话题订阅（仅缓存，不直接触发动作）─────────
         self.create_subscription(String, "/vision/scene_objects",
                                  self._on_scene_objects, 10)
         self.create_subscription(String, "/vision/emotion_context",
                                  self._on_emotion_context, 10)
 
-        self._ctx = ContextPipeline(window_sec=3.0)
+        self._ctx   = ContextPipeline(window_sec=3.0)
+        self._mem   = UserMemory()
         self._work_q = queue.Queue()
         threading.Thread(target=self._work_loop, daemon=True).start()
 
-        self.get_logger().info(
-            "brain_node 就绪，等待 /voice/command 及 /vision/* 话题")
+        self.get_logger().info("brain_node 就绪")
 
-    # ── 视觉话题回调（仅缓存）─────────────────────────────────
+    # ── 视觉话题回调 ──────────────────────────────────────────
 
     def _on_scene_objects(self, msg: String):
         try:
@@ -67,9 +68,9 @@ class BrainNode(Node):
     def _work_loop(self):
         while True:
             cmd = self._work_q.get()
+            is_intervention = cmd.startswith("__EMOTION_INTERVENTION__:")
 
-            # 情绪干预：把触发信号转为安抚 prompt，其余流程与普通指令一致
-            if cmd.startswith("__EMOTION_INTERVENTION__:"):
+            if is_intervention:
                 emotion_zh = cmd.split(":", 1)[1]
                 self.get_logger().info(f"触发情绪干预: {emotion_zh}")
                 cmd = (
@@ -81,21 +82,53 @@ class BrainNode(Node):
                 self.get_logger().info(f"收到指令: {cmd}")
 
             try:
+                # 拼接感知上下文 + 记忆上下文
                 vision_ctx = self._ctx.build_prompt()
+                memory_ctx = self._mem.get_context_for_llm()
+                full_ctx_parts = []
                 if vision_ctx:
+                    full_ctx_parts.append(vision_ctx)
+                if memory_ctx:
+                    full_ctx_parts.append(memory_ctx)
+                full_ctx = "\n\n".join(full_ctx_parts) if full_ctx_parts else ""
+
+                if full_ctx:
                     self.get_logger().info(
-                        f"视觉上下文: {vision_ctx[:100]}...")
-                instructions = process_command(
+                        f"上下文: {full_ctx[:120]}...")
+                instructions, spoken = process_command(
                     cmd, log=self.get_logger().info,
-                    vision_context=vision_ctx)
+                    vision_context=full_ctx)
+
+                # 发布机械指令
                 if instructions:
                     payload = json.dumps(instructions, ensure_ascii=False)
                     self.get_logger().info(f"发布指令: {payload}")
                     self._instr_pub.publish(String(data=payload))
                 else:
                     self.get_logger().info("无机械指令")
+
+                # 保存对话历史 + 提取记忆（仅普通对话）
+                if not is_intervention and spoken:
+                    self._mem.add_turn(cmd, spoken)
+                    self._mem.extract_and_save(cmd, spoken)
+
+                # 检测问句 → 开启持续监听
+                self._check_question_mode(spoken)
+
             except Exception as e:
                 self.get_logger().error(f"处理指令失败: {e}")
+
+    def _check_question_mode(self, spoken: str):
+        """如果口语回复以问句结尾，通知 voice_node 进入持续监听模式。"""
+        if not spoken:
+            self._listen_pub.publish(String(data="command"))
+            return
+        last = spoken.strip().split("\n")[-1].strip()
+        if last.endswith("？") or last.endswith("?") or last.endswith("吗") or last.endswith("呢"):
+            self.get_logger().info(f"检测到问句结尾，开启持续监听")
+            self._listen_pub.publish(String(data="continuous"))
+        else:
+            self._listen_pub.publish(String(data="command"))
 
 
 def main():

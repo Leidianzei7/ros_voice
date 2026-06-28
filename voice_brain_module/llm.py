@@ -186,6 +186,16 @@ def _call_llm(messages: list) -> str:
     return raw
 
 
+def _call_llm_simple(messages: list) -> str:
+    """轻量 LLM 调用（非流式，无搜索），供记忆提取等后台任务使用。"""
+    resp = llm_client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=messages,
+        stream=False,
+    )
+    return resp.choices[0].message.content or ""
+
+
 def _parse_spoken(raw: str) -> str:
     """提取 [口语回复]： 与 [执行指令]： 之间的文本（可多行）。"""
     s_idx = raw.find(_SPOKEN_PREFIX)

@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 voice_node: 纯 ROS 层。
-发布 /voice/command (std_msgs/String) — 用户指令文本。
-处理委托给 voice_brain_module.pipeline.listen_for_commands。
+发布 /voice/command — 用户指令文本。
+订阅 /voice/listen_mode — brain_node 控制监听模式。
 """
 import threading
 
@@ -18,20 +18,33 @@ class VoiceNode(Node):
     def __init__(self):
         super().__init__("voice_node")
         self._cmd_pub = self.create_publisher(String, "/voice/command", 10)
+        self.create_subscription(String, "/voice/listen_mode", self._on_listen_mode, 10)
+
+        self._listen_mode = {"wake_required": True}
         self._running = threading.Event()
         self._running.set()
 
+    def _on_listen_mode(self, msg: String):
+        """brain_node 控制是否需要唤醒词。"""
+        if msg.data == "continuous":
+            self._listen_mode["wake_required"] = False
+            self.get_logger().info("持续监听模式（跳过唤醒词）")
+        else:
+            self._listen_mode["wake_required"] = True
+
     def _on_command(self, cmd: str):
         self.get_logger().info(f"指令: {cmd}")
+        self._listen_mode["wake_required"] = True  # 发出后恢复默认
         self._cmd_pub.publish(String(data=cmd))
 
     def start(self):
         threading.Thread(
             target=listen_for_commands,
             kwargs={
-                "on_command": self._on_command,
-                "log":        self.get_logger().info,
-                "running":    self._running,
+                "on_command":  self._on_command,
+                "log":         self.get_logger().info,
+                "running":     self._running,
+                "wake_required_ref": self._listen_mode,
             },
             daemon=True,
         ).start()
