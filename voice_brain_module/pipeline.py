@@ -23,18 +23,15 @@ def listen_for_commands(on_command, log=print, running=None, wake_required_ref=N
     if wake_required_ref is None:
         wake_required_ref = {"wake_required": True}
 
-    import time as _time
     waiting = {"flag": False}
 
-    # 排空冷却：brain_node 通过 wake_required_ref["drain_until"] 控制。
-    # TTS 播完后 brain_node 发 "command"，voice_node 设 drain_until=now+3s，
-    # 3 秒内丢弃所有 ASR 结果（覆盖 VAD 切句 TTS 回声的时间窗口）。
-    if "drain_until" not in wake_required_ref:
-        wake_required_ref["drain_until"] = 0.0
-
     def _on_text(text):
-        # 排空期丢弃所有识别结果
-        if _time.monotonic() < wake_required_ref.get("drain_until", 0):
+        # TTS 播报期间静音（brain_node 发 mute）
+        if wake_required_ref.get("muted"):
+            return
+        # 刚结束 TTS，跳过第一条识别结果（TTS 回声）
+        if wake_required_ref.get("skip_next"):
+            wake_required_ref["skip_next"] = False
             return
 
         # 持续监听模式：每句话直接当指令
