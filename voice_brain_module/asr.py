@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
+import sys
 import re
 import json
 import numpy as np
+
+# 强制行缓冲：ros2 launch 将节点 stdout 设为全缓冲（pipe），
+# 导致 print 即使 flush=True 也可能延迟到进程退出才显示。
+# reconfigure 在 Python 3.7+ 可用。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
 
 # onnxruntime 在无 GPU 机器上 import 时会向 C 层 stderr 打印 WARNING，
 # 用 fd 重定向在 C 层屏蔽（Python 的 sys.stderr 重定向对此无效）
@@ -95,7 +102,7 @@ def _progress_reporter():
             _elapsed = __import__('time').time() - _load_start
             print(f"[ASR] 加载模型中... 已等待 {_elapsed:.0f}s", flush=True)
 
-print("[ASR] 正在加载语音识别模型（ONNX INT8）...")
+print("[ASR] 正在加载语音识别模型（ONNX INT8）...", flush=True)
 _prog_thread = _threading.Thread(target=_progress_reporter, daemon=True)
 _prog_thread.start()
 
