@@ -36,6 +36,7 @@ ros_voice/
 │   ├── commands.py         #   指令 schema 定义 + 校验
 │   ├── tts.py              #   TTS 语音合成（CosyVoice v2）
 │   ├── pipeline.py         #   ROS 端高层管道接口
+│   ├── context.py          #   感知上下文去抖管道
 │   ├── config.py           #   全部配置
 │   └── main.py             #   Standalone 入口（不依赖 ROS）
 ├── launch/
