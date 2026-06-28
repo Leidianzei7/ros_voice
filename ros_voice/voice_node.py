@@ -3,7 +3,7 @@
 """
 voice_node: 纯 ROS 层。
 发布 /voice/command (std_msgs/String) — 用户指令文本。
-处理委托给 voice_brain_module.pipeline.run_command_pipeline。
+处理委托给 voice_brain_module.pipeline.listen_for_commands。
 """
 import threading
 
@@ -11,7 +11,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from voice_brain_module.pipeline import run_command_pipeline
+from voice_brain_module.pipeline import listen_for_commands
 
 
 class VoiceNode(Node):
@@ -27,7 +27,7 @@ class VoiceNode(Node):
 
     def start(self):
         threading.Thread(
-            target=run_command_pipeline,
+            target=listen_for_commands,
             kwargs={
                 "on_command": self._on_command,
                 "log":        self.get_logger().info,

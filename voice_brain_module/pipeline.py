@@ -3,7 +3,7 @@
 """
 高层管道接口：供 ros_voice 等纯 ROS 层调用，屏蔽 ASR/LLM/TTS 内部细节。
 
-run_command_pipeline(on_command, log, running)
+listen_for_commands(on_command, log, running)
     采音 + VAD + ASR + 唤醒词识别一体化。每检测到一条用户指令（唤醒词后的内容
     或唤醒后单独说出的整句）通过 on_command(cmd_text) 回调。
 
@@ -15,7 +15,7 @@ process_command(cmd_text, log)
 # 模块级不 import，按需在各函数内惰性导入
 
 
-def run_command_pipeline(on_command, log=print, running=None):
+def listen_for_commands(on_command, log=print, running=None):
     from .audio import run_audio_pipeline
     from .wake_word import find_wake_word
 
