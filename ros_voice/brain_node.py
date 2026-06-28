@@ -19,8 +19,6 @@ from std_msgs.msg import String
 
 from voice_brain_module.context import ContextPipeline
 from voice_brain_module.pipeline import process_command
-from voice_brain_module.llm import generate_response
-from voice_brain_module.tts import stream_play
 
 
 class BrainNode(Node):
@@ -70,28 +68,18 @@ class BrainNode(Node):
         while True:
             cmd = self._work_q.get()
 
-            # ── 情绪干预：主动触发 LLM 安抚对话 ──
+            # 情绪干预：把触发信号转为安抚 prompt，其余流程与普通指令一致
             if cmd.startswith("__EMOTION_INTERVENTION__:"):
                 emotion_zh = cmd.split(":", 1)[1]
-                vision_ctx = self._ctx.build_prompt()
-                prompt = (
+                self.get_logger().info(f"触发情绪干预: {emotion_zh}")
+                cmd = (
                     f"检测到用户当前情绪状态为：{emotion_zh}。"
                     f"请主动进行安抚和关怀对话，不要询问用户怎么了，"
                     f"直接表达关心、陪伴和支持。语气温柔自然。"
                 )
-                try:
-                    self.get_logger().info(f"执行情绪干预: {emotion_zh}")
-                    spoken, _ = generate_response(
-                        prompt, vision_context=vision_ctx)
-                    if spoken:
-                        self.get_logger().info(f"安抚回复: {spoken}")
-                        stream_play(spoken)
-                except Exception as e:
-                    self.get_logger().error(f"情绪干预失败: {e}")
-                continue
+            else:
+                self.get_logger().info(f"收到指令: {cmd}")
 
-            # ── 普通语音指令处理 ──
-            self.get_logger().info(f"收到指令: {cmd}")
             try:
                 vision_ctx = self._ctx.build_prompt()
                 if vision_ctx:
