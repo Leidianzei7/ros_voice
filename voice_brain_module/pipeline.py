@@ -26,6 +26,10 @@ def listen_for_commands(on_command, log=print, running=None, wake_required_ref=N
     waiting = {"flag": False}
 
     def _on_text(text):
+        # TTS 播报期间静音，不处理任何识别结果
+        if wake_required_ref.get("muted"):
+            return
+
         # 持续监听模式：每句话直接当指令
         if not wake_required_ref["wake_required"]:
             on_command(text)

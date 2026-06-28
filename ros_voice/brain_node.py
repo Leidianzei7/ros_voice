@@ -95,6 +95,9 @@ class BrainNode(Node):
                 if full_ctx:
                     self.get_logger().info(
                         f"上下文: {full_ctx[:120]}...")
+
+                # TTS 播报期间静音麦克风，防止把自己的回答当指令
+                self._listen_pub.publish(String(data="mute"))
                 instructions, spoken = process_command(
                     cmd, log=self.get_logger().info,
                     vision_context=full_ctx)

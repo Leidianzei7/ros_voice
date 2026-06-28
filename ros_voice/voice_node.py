@@ -20,17 +20,20 @@ class VoiceNode(Node):
         self._cmd_pub = self.create_publisher(String, "/voice/command", 10)
         self.create_subscription(String, "/voice/listen_mode", self._on_listen_mode, 10)
 
-        self._listen_mode = {"wake_required": True}
+        self._listen_mode = {"wake_required": True, "muted": False}
         self._running = threading.Event()
         self._running.set()
 
     def _on_listen_mode(self, msg: String):
-        """brain_node 控制是否需要唤醒词。"""
-        if msg.data == "continuous":
+        """brain_node 控制监听模式。"""
+        if msg.data == "mute":
+            self._listen_mode["muted"] = True
+        elif msg.data == "continuous":
             self._listen_mode["wake_required"] = False
-            self.get_logger().info("持续监听模式（跳过唤醒词）")
-        else:
+            self._listen_mode["muted"] = False
+        else:  # "command"
             self._listen_mode["wake_required"] = True
+            self._listen_mode["muted"] = False
 
     def _on_command(self, cmd: str):
         self.get_logger().info(f"指令: {cmd}")
