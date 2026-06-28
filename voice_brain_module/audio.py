@@ -6,13 +6,8 @@
 run_audio_pipeline(on_asr_text, log, running)
     on_asr_text: Callable[[str], None] — 每段识别结果（VAD 切完后）的回调
     log:         Callable[[str], None] — 日志函数（print 或 ros logger）
-    running:     threading.Event — 为 None 时使用 state.running
-
-handle_asr_result / _dispatch_command 是 main.py 用的"唤醒词 + LLM 派发"逻辑，
-ros_voice/voice_node.py 不应使用，它有自己的 ROS topic 派发逻辑。
+    running:     threading.Event — 主循环控制信号（必须传入）
 """
-import sys
-import json
 import queue
 import threading
 import numpy as np
@@ -23,7 +18,6 @@ from .config import (
     NOISE_INIT_SEC, SPEECH_DELTA, VAD_MODE,
     resolve_device,
 )
-from . import state as _state
 from .asr import recognize
 from .vad import run_vad
 
@@ -64,9 +58,7 @@ def _calibrate_noise(audio_q, log):
 
 
 def run_audio_pipeline(on_asr_text, log=print, running=None):
-    if running is None:
-        running = _state.running
-
+    assert running is not None, "running 参数必须传入 threading.Event"
     # raw_q：回调写入 48kHz 原始帧（轻量，不做任何计算）
     # audio_q：重采样线程写入 16kHz 帧，供 VAD 消费
     raw_q   = queue.Queue(maxsize=100)
@@ -139,35 +131,3 @@ def run_audio_pipeline(on_asr_text, log=print, running=None):
                 log("（未识别到有效内容）")
 
         run_vad(audio_q, running, _on_speech, log, noise_floor)
-
-
-# ── 仅 main.py 使用：唤醒词 + LLM 派发 ───────────────────────
-from .wake_word import find_wake_word
-from .llm import generate_response
-
-
-def _dispatch_command(cmd):
-    print(f"📋 指令原文: {cmd}", flush=True)
-    print("⏳ 解析中...", flush=True)
-    spoken, commands = generate_response(cmd)
-    if spoken:
-        print(f"🔊 语音回复：{spoken}", flush=True)
-        _state.tts_text_q.put(spoken)
-    if commands:
-        print(f"\n✅ 标准化指令:\n{json.dumps(commands, ensure_ascii=False, indent=2)}\n", flush=True)
-    elif not spoken:
-        print("[警告] LLM 回复解析失败", flush=True)
-
-
-def handle_asr_result(text):
-    pos, ww_len = find_wake_word(text)
-    if pos >= 0:
-        cmd = text[pos + ww_len:].strip("，。,.： ")
-        if cmd:
-            _dispatch_command(cmd)
-        else:
-            print("👂 已唤醒，请说出指令...", flush=True)
-            _state.waiting_for_command = True
-    elif _state.waiting_for_command:
-        _state.waiting_for_command = False
-        _dispatch_command(text)

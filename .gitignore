@@ -3,8 +3,9 @@ __pycache__/
 *.py[cod]
 *.pyo
 
-# 模型文件（大文件，不入库，需手动放置）
+# 模型文件（大文件，不入库，通过 SENSEVOICE_MODEL_DIR 环境变量指定）
 onnx_model/
+models/
 
 # 虚拟环境
 .venv/
@@ -21,3 +22,9 @@ onnx_model/
 build/
 install/
 log/
+
+# 敏感文件 — 防止 API 密钥泄露
+*.env
+.env.*
+**/secrets.py
+**/local_config.py

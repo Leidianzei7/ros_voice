@@ -27,7 +27,7 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 ```
 ros_voice/
 ├── ros_voice/          # ROS 2 节点（voice_node / brain_node / control_node）
-├── realtime_asr/       # 核心模块（ASR / VAD / TTS / LLM / 唤醒词）
+├── voice_brain_module/  # 核心模块（ASR / VAD / TTS / LLM / 唤醒词）
 ├── onnx_model/         # SenseVoice Small INT8 量化 ONNX 模型
 ├── test/               # 独立测试脚本（不依赖 ROS）
 │   ├── main.py         # 完整语音交互流程（独立运行）
@@ -42,7 +42,7 @@ ros_voice/
 
 ## 关键配置
 
-配置文件：`realtime_asr/config.py`
+配置文件：`voice_brain_module/config.py`
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
@@ -118,7 +118,7 @@ python src/ros_voice/test/main.py
 | 项目定位 | 独立 Python 项目 | 标准 ROS 2 功能包 |
 | 目录结构 | `ros_voice/` 是项目的子目录 | `ros_voice/` 本身即功能包根目录 |
 | 编译方式 | 在包内部误执行 `colcon build`，产物散落于源码目录 | 在 `ros2_ws/` 工作空间根执行，产物在 `build/install/log/` |
-| 依赖模块 | `realtime_asr/`、`onnx_model/` 游离在功能包之外 | 全部纳入功能包目录，路径自洽 |
+| 依赖模块 | `voice_brain_module/`、`onnx_model/` 游离在功能包之外 | 全部纳入功能包目录，路径自洽 |
 | 工作空间挂载 | 通过软链接 `ros2_ws/src/ros_voice → Genshin/TTS/ros_voice` | 直接实体目录，无软链接 |
 | 测试入口 | 项目根的 `main.py` | 功能包内 `test/main.py`，与 ROS 层独立 |
 

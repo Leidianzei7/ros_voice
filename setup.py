@@ -6,7 +6,7 @@ package_name = "ros_voice"
 setup(
     name=package_name,
     version="0.1.0",
-    packages=[package_name],
+    packages=[package_name, "voice_brain_module"],
     data_files=[
         ("share/ament_index/resource_index/packages",
             ["resource/" + package_name]),
@@ -17,7 +17,7 @@ setup(
     zip_safe=True,
     maintainer="leidianzei7",
     maintainer_email="lei15988006987@gmail.com",
-    description="语音交互 ROS 2 节点集（voice_node + brain_node + control_node）",
+    description="语音交互 ROS 2 节点集（voice_node + brain_node + control_node） + voice_brain_module 管道",
     license="MIT",
     entry_points={
         "console_scripts": [

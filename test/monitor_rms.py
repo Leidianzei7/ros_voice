@@ -7,14 +7,10 @@
 运行：python3 monitor_rms.py
 退出：Ctrl+C
 """
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-
 import numpy as np
 import sounddevice as sd
 from scipy import signal as scipy_signal
-from realtime_asr.config import (
+from voice_brain_module.config import (
     DEVICE_INDEX, SAMPLE_RATE, HW_SAMPLE_RATE, CHUNK,
     NOISE_INIT_SEC, NOISE_ALPHA, SPEECH_DELTA,
 )

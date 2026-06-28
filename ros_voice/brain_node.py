@@ -22,24 +22,20 @@ brain_node: 纯 ROS 层。
 - 唯一例外：稳定情绪为负面(intervention_required=true)时，主动触发一次安抚对话。
 - 数据靠 3 秒窗口自然老化，无需保留历史。
 """
-import sys
 import json
 import math
 import time
 import queue
 import threading
 from collections import deque, Counter
-from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from realtime_asr.pipeline import process_command
-from realtime_asr.llm import generate_response
-from realtime_asr.tts import stream_play
+from voice_brain_module.pipeline import process_command
+from voice_brain_module.llm import generate_response
+from voice_brain_module.tts import stream_play
 
 
 class BrainNode(Node):

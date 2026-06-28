@@ -3,6 +3,30 @@
 import os
 from pypinyin import lazy_pinyin
 
+# ── 模型路径（SenseVoice ONNX 模型，由环境变量优先）──────────
+# 设置 SENSEVOICE_MODEL_DIR 指向模型目录；未设置时自动探测
+# 优先级：SENSEVOICE_MODEL_DIR > 包内置 onnx_model > workspace models/
+_MODEL_DIR_RAW = os.getenv("SENSEVOICE_MODEL_DIR", "")
+if _MODEL_DIR_RAW:
+    SENSEVOICE_MODEL_DIR = _MODEL_DIR_RAW
+else:
+    # 回退：先看包内同级 onnx_model/（兼容旧布局），再看 workspace models/
+    _pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    _pkg_onnx = os.path.join(_pkg_dir, "..", "onnx_model")
+    _ws_onnx  = os.path.join(_pkg_dir, "..", "..", "..", "models", "sensevoice")
+    if os.path.isdir(_pkg_onnx):
+        SENSEVOICE_MODEL_DIR = os.path.abspath(_pkg_onnx)
+    elif os.path.isdir(_ws_onnx):
+        SENSEVOICE_MODEL_DIR = os.path.abspath(_ws_onnx)
+    else:
+        # 包内无、workspace 无 → 扔运行时错误，好过静默崩溃
+        raise FileNotFoundError(
+            f"SenseVoice 模型目录未找到，已尝试：\n"
+            f"  · {os.path.abspath(_pkg_onnx)}\n"
+            f"  · {os.path.abspath(_ws_onnx)}\n"
+            f"请设置环境变量 SENSEVOICE_MODEL_DIR 指向模型目录"
+        )
+
 # ── 设备配置 ──────────────────────────────────────────────
 # 按名称子串匹配设备，优先级高于 DEVICE_INDEX 回退值。
 # 运行 `python3 -c "import sounddevice as sd; print(sd.query_devices())"` 查看设备列表
@@ -60,8 +84,14 @@ _WW_PINYIN      = "".join(lazy_pinyin(WAKE_WORD))       # "xiaozhixiaozhi"
 _WWS_PINYIN     = "".join(lazy_pinyin(WAKE_WORD_SHORT)) # "xiaozhi"
 
 # ── LLM 配置 ──────────────────────────────────────────────
-# 推荐通过环境变量 DASHSCOPE_API_KEY 传入，避免明文写在代码里
-LLM_API_KEY  = os.getenv("DASHSCOPE_API_KEY", "sk-554e53eda18e429d966101bebe10d492")
+# 必须设置环境变量 DASHSCOPE_API_KEY，不提供默认值（防止密钥泄露）
+LLM_API_KEY = os.getenv("DASHSCOPE_API_KEY")
+if not LLM_API_KEY:
+    raise RuntimeError(
+        "未设置 DASHSCOPE_API_KEY 环境变量。\n"
+        "请在终端执行: export DASHSCOPE_API_KEY=your_key_here\n"
+        "或在 ~/.bashrc 中永久添加此行。"
+    )
 LLM_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 LLM_MODEL    = "qwen-turbo"
 

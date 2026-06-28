@@ -11,7 +11,8 @@ import dashscope
 
 # 以下为北京地域url，若使用新加坡地域的模型，需将url替换为：https://dashscope-intl.aliyuncs.com/api/v1
 import os
-os.environ['DASHSCOPE_API_KEY'] = 'sk-ba3ab6823ba940838b2bf0aac6912272'
+# 通过环境变量设置，防止密钥泄露：export DASHSCOPE_API_KEY=your_key
+os.environ.setdefault('DASHSCOPE_API_KEY', os.getenv('DASHSCOPE_API_KEY', ''))
 
 dashscope.base_http_api_url = 'https://dashscope.aliyuncs.com/api/v1'
 

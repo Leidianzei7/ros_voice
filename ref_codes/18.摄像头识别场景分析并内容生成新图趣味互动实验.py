@@ -33,8 +33,8 @@ import ffmpeg
 #os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 #=============由于部署多个大模型会导致内存不足，这里采用在线调用qwen-image-plus进行文生图
-# 生成自己的key，登陆阿里百炼平台平台注册自己的账号
-os.environ['DASHSCOPE_API_KEY'] = 'sk-ba3ab6823ba940838b2bf0aac6912272'
+# 通过环境变量设置，防止密钥泄露：export DASHSCOPE_API_KEY=your_key
+os.environ.setdefault('DASHSCOPE_API_KEY', os.getenv('DASHSCOPE_API_KEY', ''))
 dashscope.base_http_api_url = 'https://dashscope.aliyuncs.com/api/v1'
 api_key = os.getenv("DASHSCOPE_API_KEY")
 

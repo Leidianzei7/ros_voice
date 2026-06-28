@@ -25,9 +25,10 @@ ort.set_default_logger_severity(3)   # 屏蔽 Session 创建时的后续 ORT 日
 import torch
 from funasr.frontends.wav_frontend import WavFrontend
 
-_DIR   = os.path.dirname(os.path.abspath(__file__))
-_ONNX  = os.path.join(_DIR, '..', 'onnx_model', 'model_quant.onnx')
 _CACHE = os.path.expanduser('~/.cache/modelscope/hub/models/iic/SenseVoiceSmall')
+# 模型路径由 config.SENSEVOICE_MODEL_DIR（环境变量 + 回退）决定
+from .config import SENSEVOICE_MODEL_DIR as _MODEL_DIR
+_ONNX  = os.path.join(_MODEL_DIR, 'model_quant.onnx')
 
 # ── 词表 ──────────────────────────────────────────────────────
 with open(os.path.join(_CACHE, 'tokens.json')) as _f:
@@ -78,7 +79,7 @@ def _extract(audio_np: np.ndarray):
     return feats.astype(np.float32), int(flen.item())
 
 # ── ONNX 推理会话 ──────────────────────────────────────────────
-_ONNX_OPT = os.path.join(_DIR, '..', 'onnx_model', 'model_quant_opt.onnx')
+_ONNX_OPT = os.path.join(_MODEL_DIR, 'model_quant_opt.onnx')
 
 print("正在加载语音识别模型（ONNX INT8）...")
 _opts = ort.SessionOptions()

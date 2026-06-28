@@ -3,19 +3,15 @@
 """
 voice_node: 纯 ROS 层。
 发布 /voice/command (std_msgs/String) — 用户指令文本。
-处理委托给 realtime_asr.pipeline.run_command_pipeline。
+处理委托给 voice_brain_module.pipeline.run_command_pipeline。
 """
-import sys
 import threading
-from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from realtime_asr.pipeline import run_command_pipeline
+from voice_brain_module.pipeline import run_command_pipeline
 
 
 class VoiceNode(Node):

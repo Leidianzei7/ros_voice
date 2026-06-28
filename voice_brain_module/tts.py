@@ -9,7 +9,6 @@ from scipy import signal as scipy_signal
 import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer, AudioFormat, ResultCallback
 from .config import TTS_VOICE, TTS_SAMPLE_RATE, HW_SAMPLE_RATE, OUTPUT_DEVICE_NAME, LLM_API_KEY, CHUNK, resolve_device
-from . import state as _state
 
 dashscope.api_key = LLM_API_KEY
 
@@ -66,15 +65,3 @@ def stream_play(text):
             pcm_48k = scipy_signal.resample_poly(pcm, up=3, down=1)
             pcm_48k = pcm_48k.clip(-32768, 32767).astype(np.int16)
             stream.write(pcm_48k)
-
-
-def tts_playback_thread():
-    while _state.running.is_set():
-        try:
-            text = _state.tts_text_q.get(timeout=0.5)
-        except queue.Empty:
-            continue
-        try:
-            stream_play(text)
-        except Exception as e:
-            print(f"[TTS 错误] {e}", file=sys.stderr)
