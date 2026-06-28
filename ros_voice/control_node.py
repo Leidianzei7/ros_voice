@@ -6,13 +6,11 @@ control_node: 指令执行节点。
 发布 /cmd_vel (geometry_msgs/Twist) — 底盘运动控制。
 发布 /arm/grasp_command (std_msgs/String) — 机械臂抓取目标，由 arm_task_manager 消费。
 """
-import sys
 import json
 import math
 import queue
 import time
 import threading
-from pathlib import Path
 
 import rclpy
 from rclpy.node import Node

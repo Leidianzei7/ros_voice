@@ -7,8 +7,8 @@
 
 用法:
     ctx = ContextPipeline(window_sec=3.0)
-    ctx.feed_scene(scene_json_str)
-    emotion = ctx.feed_emotion(emotion_json_str)   # 返回需干预的情绪名
+    ctx.feed_scene(json.loads(scene_msg.data))
+    emotion = ctx.feed_emotion(json.loads(emotion_msg.data))
     prompt = ctx.build_prompt()                    # 注入 LLM 的上下文字符串
 """
 import math
