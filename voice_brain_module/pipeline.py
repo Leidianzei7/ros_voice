@@ -9,14 +9,16 @@ run_command_pipeline(on_command, log, running)
 
 process_command(cmd_text, log)
     LLM 推理 + 语音回复播报一体化。返回机械指令列表（可能为空）。
+
+注意：各函数内部按需导入，避免 brain_node 导入 pipeline 时连带加载 ASR 模型。
 """
-from .audio import run_audio_pipeline
-from .wake_word import find_wake_word
-from .llm import generate_response
-from .tts import stream_play
+# 模块级不 import，按需在各函数内惰性导入
 
 
 def run_command_pipeline(on_command, log=print, running=None):
+    from .audio import run_audio_pipeline
+    from .wake_word import find_wake_word
+
     waiting = {"flag": False}
 
     def _on_text(text):
@@ -36,6 +38,9 @@ def run_command_pipeline(on_command, log=print, running=None):
 
 
 def process_command(cmd_text, log=print, vision_context=""):
+    from .llm import generate_response
+    from .tts import stream_play
+
     spoken, commands = generate_response(cmd_text, vision_context=vision_context)
     if spoken:
         log(f"语音回复: {spoken}")
