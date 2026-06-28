@@ -41,7 +41,7 @@ ros_voice/
 ├── launch/
 │   └── voice.launch.py     # 一键启动三节点
 ├── test/
-│   ├── main.py             # 无 ROS 独立测试入口
+│   ├── start_voice_brain.py # 无 ROS 独立测试入口
 │   └── monitor_rms.py      # 麦克风 RMS 实时监测（校准 VAD 阈值用）
 ├── ref_codes/              # 历史实验脚本（参考用）
 ├── ref_docs/               # 参考文档
@@ -138,7 +138,7 @@ python3 -m voice_brain_module
 | 模型存放 | `onnx_model/` 在源码包内 | `~/ros2_ws/models/sensevoice/` 外置 |
 | 编译方式 | 包内误执行 `colcon build` | 在 `ros2_ws/` 根执行，产物在 `build/install/log/` |
 | 工作空间 | 软链接挂载 | 直接实体目录 |
-| 测试入口 | 项目根 `main.py` | `test/main.py` 或 `python3 -m voice_brain_module` |
+| 测试入口 | 项目根 `main.py` | `test/start_voice_brain.py` 或 `python3 -m voice_brain_module` |
 
 ## License
 
