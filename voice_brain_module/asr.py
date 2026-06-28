@@ -81,21 +81,47 @@ def _extract(audio_np: np.ndarray):
 # ── ONNX 推理会话 ──────────────────────────────────────────────
 _ONNX_OPT = os.path.join(_MODEL_DIR, 'model_quant_opt.onnx')
 
-print("正在加载语音识别模型（ONNX INT8）...")
-_opts = ort.SessionOptions()
-# 默认 execution_mode = SEQUENTIAL，inter_op 不生效，不设；SenseVoice 是串行 encoder 也用不上
-_opts.intra_op_num_threads = 4   # 8 核 ARM Cortex-A55，留 4 核给音频/系统/Python 主线程
-_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+# 模型加载耗时较长（首次 ~60s，缓存后 ~7s），用 spinner 显示进度
+import threading as _threading
+_load_done = _threading.Event()
+def _spinner():
+    import sys as _sys
+    _start = __import__('time').time()
+    _chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    _i = 0
+    while not _load_done.is_set():
+        _elapsed = __import__('time').time() - _start
+        _sys.stderr.write(f"\r  加载模型中... {_chars[_i % len(_chars)]}  {_elapsed:.0f}s")
+        _sys.stderr.flush()
+        _i += 1
+        _load_done.wait(0.1)
 
-# 首次运行生成硬件优化缓存，后续直接加载缓存（~7s 更快）
-if os.path.exists(_ONNX_OPT):
-    _model_to_load = _ONNX_OPT
-else:
-    _opts.optimized_model_filepath = _ONNX_OPT
-    _model_to_load = _ONNX
-# 显式指定 CPU provider，跳过 GPU 设备扫描，消除无 GPU 时的警告
-_sess = ort.InferenceSession(_model_to_load, sess_options=_opts,
-                             providers=['CPUExecutionProvider'])
+_spin_thread = _threading.Thread(target=_spinner, daemon=True)
+_spin_thread.start()
+
+try:
+    _opts = ort.SessionOptions()
+    # 默认 execution_mode = SEQUENTIAL，inter_op 不生效，不设；SenseVoice 是串行 encoder 也用不上
+    _opts.intra_op_num_threads = 4   # 8 核 ARM Cortex-A55，留 4 核给音频/系统/Python 主线程
+    _opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+    # 首次运行生成硬件优化缓存，后续直接加载缓存（~7s 更快）
+    if os.path.exists(_ONNX_OPT):
+        _model_to_load = _ONNX_OPT
+    else:
+        _opts.optimized_model_filepath = _ONNX_OPT
+        _model_to_load = _ONNX
+    # 显式指定 CPU provider，跳过 GPU 设备扫描，消除无 GPU 时的警告
+    _sess = ort.InferenceSession(_model_to_load, sess_options=_opts,
+                                 providers=['CPUExecutionProvider'])
+finally:
+    _load_done.set()
+    _spin_thread.join(timeout=0.5)
+    # 清除 spinner 行
+    import sys as _sys2
+    _sys2.stderr.write("\r" + " " * 60 + "\r")
+    _sys2.stderr.flush()
+
 print("模型加载完成！\n")
 
 # ── CTC 贪心解码 ───────────────────────────────────────────────
