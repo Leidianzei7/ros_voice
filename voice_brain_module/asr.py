@@ -81,29 +81,23 @@ def _extract(audio_np: np.ndarray):
 # ── ONNX 推理会话 ──────────────────────────────────────────────
 _ONNX_OPT = os.path.join(_MODEL_DIR, 'model_quant_opt.onnx')
 
-# 模型加载耗时较长（首次 ~60s，缓存后 ~7s），用 spinner 显示进度。
-# 直接写 /dev/tty 绕过 ros2 launch 按行缓冲的 stdout 捕获。
+# 模型加载耗时较长（首次 ~60s，缓存后 ~7s），每 5 秒打一行进度。
+# 使用普通 print（带 \n）确保 ros2 launch 按行捕获 stdout 能正常显示。
 import threading as _threading
 _load_start = __import__('time').time()
 _load_done = _threading.Event()
-def _spinner():
-    try:
-        _tty = open("/dev/tty", "w")
-    except OSError:
-        return  # 无终端，跳过 spinner
-    _chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    _i = 0
-    while not _load_done.is_set():
-        _elapsed = __import__('time').time() - _load_start
-        _tty.write(f"\r  加载语音识别模型中... {_chars[_i % len(_chars)]}  {_elapsed:.0f}s")
-        _tty.flush()
-        _i += 1
-        _load_done.wait(0.1)
-    _tty.close()
+_last_print = [_load_start]
 
-print("正在加载语音识别模型（ONNX INT8）...")
-_spin_thread = _threading.Thread(target=_spinner, daemon=True)
-_spin_thread.start()
+def _progress_reporter():
+    while not _load_done.is_set():
+        _load_done.wait(5.0)
+        if not _load_done.is_set():
+            _elapsed = __import__('time').time() - _load_start
+            print(f"[ASR] 加载模型中... 已等待 {_elapsed:.0f}s", flush=True)
+
+print("[ASR] 正在加载语音识别模型（ONNX INT8）...")
+_prog_thread = _threading.Thread(target=_progress_reporter, daemon=True)
+_prog_thread.start()
 
 try:
     _opts = ort.SessionOptions()
@@ -119,14 +113,9 @@ try:
                                  providers=['CPUExecutionProvider'])
 finally:
     _load_done.set()
-    _spin_thread.join()
+    _prog_thread.join()
     _elapsed = __import__('time').time() - _load_start
-    try:
-        with open("/dev/tty", "w") as _tty:
-            _tty.write(f"\r  加载语音识别模型中... 完成！耗时 {_elapsed:.0f}s\n")
-    except OSError:
-        pass
-    print(f"模型加载完成，耗时 {_elapsed:.0f}s")  # 同时写 stdout 给 ROS log
+    print(f"[ASR] 模型加载完成！耗时 {_elapsed:.0f}s", flush=True)
 
 # ── CTC 贪心解码 ───────────────────────────────────────────────
 def _ctc_decode(logits: np.ndarray, enc_len: int) -> list:
