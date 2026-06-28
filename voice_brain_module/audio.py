@@ -108,26 +108,32 @@ def run_audio_pipeline(on_asr_text, log=print, running=None):
 
     threading.Thread(target=_resample_worker, daemon=True).start()
 
-    with sd.InputStream(
-        device=resolve_device(DEVICE_NAME, "input"),
-        samplerate=HW_SAMPLE_RATE,
-        channels=CHANNELS,
-        dtype="float32",
-        blocksize=CHUNK * 3,
-        latency='high',        # 让驱动保留更大内部缓冲，减少 overflow
-        callback=_callback,
-    ):
-        noise_floor = 0.0
-        if VAD_MODE != "webrtc":
-            noise_floor = _calibrate_noise(audio_q, log)
+    # PortAudio/ALSA 偶发 xrun 会关闭流且不抛异常，外层循环负责重试恢复
+    while running.is_set():
+        try:
+            with sd.InputStream(
+                device=resolve_device(DEVICE_NAME, "input"),
+                samplerate=HW_SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype="float32",
+                blocksize=CHUNK * 3,
+                latency='high',
+                callback=_callback,
+            ):
+                noise_floor = 0.0
+                if VAD_MODE != "webrtc":
+                    noise_floor = _calibrate_noise(audio_q, log)
 
-        def _on_speech(audio):
-            log("⏳ 识别中...")
-            text = recognize(audio)
-            if text.strip():
-                log(f"🗣  {text}")
-                on_asr_text(text)
-            else:
-                log("（未识别到有效内容）")
+                def _on_speech(audio):
+                    log("⏳ 识别中...")
+                    text = recognize(audio)
+                    if text.strip():
+                        log(f"🗣  {text}")
+                        on_asr_text(text)
+                    else:
+                        log("（未识别到有效内容）")
 
-        run_vad(audio_q, running, _on_speech, log, noise_floor)
+                run_vad(audio_q, running, _on_speech, log, noise_floor)
+        except Exception as e:
+            log(f"[音频] 流异常: {e}，1 秒后重试...")
+            running.wait(1.0)
