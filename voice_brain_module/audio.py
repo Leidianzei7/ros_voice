@@ -8,9 +8,7 @@ run_audio_pipeline(on_asr_text, log, running)
     log:         Callable[[str], None] — 日志函数（print 或 ros logger）
     running:     threading.Event — 主循环控制信号（必须传入）
 
-使用阻塞 read() 而非 PortAudio callback：回调模式下 ALSA xrun 可能在 C
-层卡死 WaitForFrames 且 Python 无法中断；阻塞模式每次 read 都有超时，
-卡住即可被检测并重试恢复。
+使用 PortAudio 回调 + 外层重试恢复 ALSA xrun。
 """
 import queue
 import threading
@@ -34,28 +32,22 @@ def _drain(q):
             break
 
 
-def _calibrate_noise(stream, log):
+def _calibrate_noise(audio_q, log):
     from .tts import stream_play
     log("🔇 即将校准底噪，请保持安静...")
     stream_play("请保持安静，正在校准底噪")
-    # 丢掉 TTS 期间采集到的回声
-    try:
-        while True:
-            stream.read(CHUNK * 3)
-    except sd.PortAudioError:
-        pass
+    _drain(audio_q)
 
     log(f"🔇 校准中（{NOISE_INIT_SEC:.1f}秒）...")
     init_chunks = int(NOISE_INIT_SEC * SAMPLE_RATE / CHUNK)
     samples = []
     for _ in range(init_chunks):
         try:
-            indata, _ = stream.read(CHUNK * 3)
-        except sd.PortAudioError:
-            continue
-        chunk = scipy_signal.resample_poly(indata[:, 0], up=1, down=3).astype(np.float32)
-        rms = np.sqrt(np.mean(chunk ** 2) * (32768 ** 2))
-        samples.append(rms)
+            chunk = audio_q.get(timeout=1.0)
+            rms = np.sqrt(np.mean(chunk.astype(np.float32) ** 2) * (32768 ** 2))
+            samples.append(rms)
+        except queue.Empty:
+            pass
 
     noise_floor = float(np.median(samples)) if samples else 500.0
     threshold = noise_floor + SPEECH_DELTA
@@ -63,39 +55,61 @@ def _calibrate_noise(stream, log):
     log(f"📊 底噪 {db(noise_floor):.1f} dB，检测阈值 {db(threshold):.1f} dB")
 
     stream_play("校准完成，可以开始说话了")
+    _drain(audio_q)
     return noise_floor
-
-
-def _stream_worker(stream, audio_q, running, log):
-    """阻塞读取音频帧，重采样后放入 audio_q，供 VAD 消费。"""
-    import time as _time
-    overflow_count = 0
-    last_report = _time.monotonic()
-
-    while running.is_set():
-        try:
-            indata, _ = stream.read(CHUNK * 3)
-        except sd.PortAudioError as e:
-            log(f"[音频] 读取异常: {e}")
-            continue
-
-        chunk = scipy_signal.resample_poly(indata[:, 0], up=1, down=3).astype(np.float32)
-        try:
-            audio_q.put_nowait(chunk)
-        except queue.Full:
-            overflow_count += 1
-
-        now = _time.monotonic()
-        if now - last_report >= 10.0 and overflow_count > 0:
-            log(f"[音频] 10s 内丢帧 {overflow_count} 次")
-            overflow_count = 0
-            last_report = now
 
 
 def run_audio_pipeline(on_asr_text, log=print, running=None):
     assert running is not None, "running 参数必须传入 threading.Event"
 
     while running.is_set():
+        raw_q   = queue.Queue(maxsize=100)
+        audio_q = queue.Queue()
+        status_q = queue.Queue()
+
+        import time as _time
+        cb_total    = [0]
+        cb_overflow = [0]
+        last_report = [_time.monotonic()]
+
+        def _callback(indata, frames, time_info, status):
+            cb_total[0] += 1
+            if status:
+                if status.input_overflow:
+                    cb_overflow[0] += 1
+                else:
+                    status_q.put_nowait(str(status))
+            try:
+                raw_q.put_nowait(indata[:, 0].copy())
+            except queue.Full:
+                pass
+
+        def _resample_worker():
+            while running.is_set():
+                while not status_q.empty():
+                    try:
+                        log(f"[音频状态] {status_q.get_nowait()}")
+                    except queue.Empty:
+                        break
+                now = _time.monotonic()
+                if now - last_report[0] >= 10.0:
+                    total, oflw = cb_total[0], cb_overflow[0]
+                    if oflw > 0 and total > 0:
+                        pct = 100.0 * oflw / total
+                        tip = "（<5% 可忽略）" if pct < 5.0 else ""
+                        log(f"[音频] 10s 内丢帧 {oflw}/{total} 回调 ({pct:.1f}%) {tip}")
+                    cb_total[0] = 0
+                    cb_overflow[0] = 0
+                    last_report[0] = now
+                try:
+                    raw = raw_q.get(timeout=0.1)
+                    chunk = scipy_signal.resample_poly(raw, up=1, down=3).astype(np.float32)
+                    audio_q.put(chunk)
+                except queue.Empty:
+                    continue
+
+        threading.Thread(target=_resample_worker, daemon=True).start()
+
         try:
             with sd.InputStream(
                 device=resolve_device(DEVICE_NAME, "input"),
@@ -104,19 +118,11 @@ def run_audio_pipeline(on_asr_text, log=print, running=None):
                 dtype="float32",
                 blocksize=CHUNK * 3,
                 latency='high',
-            ) as stream:
-                audio_q = queue.Queue(maxsize=200)
-
+                callback=_callback,
+            ):
                 noise_floor = 0.0
                 if VAD_MODE != "webrtc":
-                    noise_floor = _calibrate_noise(stream, log)
-
-                worker = threading.Thread(
-                    target=_stream_worker,
-                    args=(stream, audio_q, running, log),
-                    daemon=True,
-                )
-                worker.start()
+                    noise_floor = _calibrate_noise(audio_q, log)
 
                 def _on_speech(audio):
                     log("⏳ 识别中...")
