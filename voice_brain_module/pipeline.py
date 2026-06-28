@@ -25,16 +25,20 @@ def listen_for_commands(on_command, log=print, running=None, wake_required_ref=N
 
     import time as _time
     waiting = {"flag": False}
-    cooldown = {"until": 0.0}  # 每次发指令后冷却 3 秒，排空 TTS 回声
+
+    # 排空冷却：brain_node 通过 wake_required_ref["drain_until"] 控制。
+    # TTS 播完后 brain_node 发 "command"，voice_node 设 drain_until=now+3s，
+    # 3 秒内丢弃所有 ASR 结果（覆盖 VAD 切句 TTS 回声的时间窗口）。
+    if "drain_until" not in wake_required_ref:
+        wake_required_ref["drain_until"] = 0.0
 
     def _on_text(text):
-        # 冷却期内丢弃所有识别结果（防止 TTS 回声被识别）
-        if _time.monotonic() < cooldown["until"]:
+        # 排空期丢弃所有识别结果
+        if _time.monotonic() < wake_required_ref.get("drain_until", 0):
             return
 
         # 持续监听模式：每句话直接当指令
         if not wake_required_ref["wake_required"]:
-            cooldown["until"] = _time.monotonic() + 3.0
             on_command(text)
             return
 
@@ -42,14 +46,12 @@ def listen_for_commands(on_command, log=print, running=None, wake_required_ref=N
         if pos >= 0:
             cmd = text[pos + ww_len:].strip("，。,.： ")
             if cmd:
-                cooldown["until"] = _time.monotonic() + 3.0
                 on_command(cmd)
             else:
                 log("已唤醒，等待指令...")
                 waiting["flag"] = True
         elif waiting["flag"]:
             waiting["flag"] = False
-            cooldown["until"] = _time.monotonic() + 3.0
             on_command(text)
 
     run_audio_pipeline(on_asr_text=_on_text, log=log, running=running)
