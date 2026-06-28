@@ -88,10 +88,6 @@ def run_audio_pipeline(on_asr_text, log=print, running=None, active=None):
 
         def _resample_worker():
             while running.is_set():
-                if not active.is_set():
-                    _drain(raw_q)
-                    active.wait(0.1)
-                    continue
                 while not status_q.empty():
                     try:
                         log(f"[音频状态] {status_q.get_nowait()}")
