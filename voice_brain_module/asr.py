@@ -113,9 +113,10 @@ try:
                                  providers=['CPUExecutionProvider'])
 finally:
     _load_done.set()
-    _spin_thread.join(timeout=0.5)
+    _spin_thread.join()            # 确保 spinner 线程完全退出
     _elapsed = __import__('time').time() - _load_start
-    print(f"\r  模型加载完成！耗时 {_elapsed:.0f}s" + " " * 20)
+    # 清除 spinner 最后一帧，在新行输出完成消息
+    print(f"\r  加载语音识别模型中... 完成！耗时 {_elapsed:.0f}s" + " " * 10)
     print()
 
 # ── CTC 贪心解码 ───────────────────────────────────────────────
