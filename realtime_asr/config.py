@@ -4,9 +4,28 @@ import os
 from pypinyin import lazy_pinyin
 
 # ── 设备配置 ──────────────────────────────────────────────
+# 按名称子串匹配设备，优先级高于 DEVICE_INDEX 回退值。
 # 运行 `python3 -c "import sounddevice as sd; print(sd.query_devices())"` 查看设备列表
-DEVICE_INDEX        = 1      # 麦克风输入设备编号（USB PnP Audio Device）
-OUTPUT_DEVICE_INDEX = 1      # 扬声器输出设备编号（同一 USB PnP 设备）
+DEVICE_NAME        = "USB PnP Audio Device"   # 麦克风输入设备名（子串匹配）
+OUTPUT_DEVICE_NAME = "USB PnP Audio Device"   # 扬声器输出设备名（子串匹配）
+DEVICE_INDEX        = 0   # 名称匹配失败时的回退索引
+OUTPUT_DEVICE_INDEX = 0
+
+def resolve_device(name: str, kind: str = "input") -> int:
+    """按名称子串匹配设备，返回 index；失败时回退到 DEVICE_INDEX/OUTPUT_DEVICE_INDEX。"""
+    import sounddevice as sd
+    devices = sd.query_devices()
+    for idx, d in enumerate(devices):
+        if name and name in d.get("name", ""):
+            if kind == "input" and d.get("max_input_channels", 0) > 0:
+                return idx
+            if kind == "output" and d.get("max_output_channels", 0) > 0:
+                return idx
+    # 回退
+    fallback = DEVICE_INDEX if kind == "input" else OUTPUT_DEVICE_INDEX
+    import warnings
+    warnings.warn(f"未找到匹配 '{name}' 的{kind}设备，使用回退 index={fallback}")
+    return fallback
 HW_SAMPLE_RATE      = 48000  # 硬件原生采样率
 SAMPLE_RATE         = 16000  # SenseVoiceSmall 要求 16kHz，代码内自动重采样
 CHANNELS            = 1

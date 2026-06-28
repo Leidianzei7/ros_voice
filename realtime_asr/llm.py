@@ -18,15 +18,22 @@ _MAX_RETRIES = 2   # 校验失败时最多让 LLM 重新生成的次数
 def generate_response(
     text: str,
     system_prompt: str = _SYSTEM_PROMPT,
+    vision_context: str = "",
 ) -> tuple[str, list[dict]]:
     """
     调用 LLM，返回 (口语回复, 指令列表)。
     若 LLM 输出的指令未通过 commands.validate_commands 校验，会把错误反馈给
     LLM 让其重新生成；重试耗尽后丢弃指令并在口语回复中告知用户。
+
+    vision_context: 可选的视觉/情绪上下文，会注入到用户消息中，
+                    供 LLM 回答"桌上有什么"或进行情绪关怀。
     """
+    user_content = text
+    if vision_context:
+        user_content = f"{vision_context}\n\n---\n用户说：{text}"
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user",   "content": text},
+        {"role": "user",   "content": user_content},
     ]
 
     spoken, commands, last_err = "", [], ""

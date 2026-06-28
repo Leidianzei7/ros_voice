@@ -35,8 +35,8 @@ def run_command_pipeline(on_command, log=print, running=None):
     run_audio_pipeline(on_asr_text=_on_text, log=log, running=running)
 
 
-def process_command(cmd_text, log=print):
-    spoken, commands = generate_response(cmd_text)
+def process_command(cmd_text, log=print, vision_context=""):
+    spoken, commands = generate_response(cmd_text, vision_context=vision_context)
     if spoken:
         log(f"语音回复: {spoken}")
         stream_play(spoken)

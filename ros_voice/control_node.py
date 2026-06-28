@@ -4,6 +4,7 @@
 control_node: 指令执行节点。
 订阅 /command (std_msgs/String) — JSON 指令数组。
 发布 /cmd_vel (geometry_msgs/Twist) — 底盘运动控制。
+发布 /arm/grasp_command (std_msgs/String) — 机械臂抓取目标，由 arm_task_manager 消费。
 """
 import sys
 import json
@@ -23,6 +24,7 @@ class ControlNode(Node):
     def __init__(self):
         super().__init__("control_node")
         self._cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self._arm_grasp_pub = self.create_publisher(String, "/arm/grasp_command", 10)
         self.create_subscription(String, "/command", self._on_command, 10)
 
         self._work_q = queue.Queue()
@@ -63,7 +65,7 @@ class ControlNode(Node):
         if actuator == "底盘":
             self._execute_chassis(action, params, idx)
         elif actuator == "机械臂":
-            self.get_logger().warn(f"第 {idx} 条: 机械臂控制尚未实现")
+            self._execute_arm(action, params, idx)
         else:
             self.get_logger().warn(f"第 {idx} 条: 未知执行机构 \"{actuator}\"")
 
@@ -107,7 +109,19 @@ class ControlNode(Node):
             self._stop()
 
         else:
-            self.get_logger().warn(f"第 {idx} 条: 未知底盘动作 \"{action}\"")
+            pass  # 非本节点负责的动作，静默跳过
+
+    def _execute_arm(self, action: str, params: dict, idx: int):
+        """机械臂控制：发布抓取命令到 /arm/grasp_command，由 arm_task_manager 执行。"""
+        if action == "抓取":
+            target = params.get("target", "")
+            if not target:
+                self.get_logger().warn(f"第 {idx} 条: 机械臂抓取缺少 target 参数")
+                return
+            self.get_logger().info(f"✋ 机械臂抓取: {target}")
+            self._arm_grasp_pub.publish(String(data=target))
+        else:
+            self.get_logger().warn(f"第 {idx} 条: 未知机械臂动作 \"{action}\"")
 
     def _publish_and_sleep(self, twist: Twist, duration: float):
         """发布 Twist，保持 duration 秒后停止。每 0.1s 检查打断信号。"""

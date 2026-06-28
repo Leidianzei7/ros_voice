@@ -8,7 +8,7 @@ import sounddevice as sd
 from scipy import signal as scipy_signal
 import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer, AudioFormat, ResultCallback
-from .config import TTS_VOICE, TTS_SAMPLE_RATE, HW_SAMPLE_RATE, OUTPUT_DEVICE_INDEX, LLM_API_KEY, CHUNK
+from .config import TTS_VOICE, TTS_SAMPLE_RATE, HW_SAMPLE_RATE, OUTPUT_DEVICE_NAME, LLM_API_KEY, CHUNK, resolve_device
 from . import state as _state
 
 dashscope.api_key = LLM_API_KEY
@@ -55,7 +55,7 @@ def stream_play(text):
         samplerate=HW_SAMPLE_RATE,
         channels=1,
         dtype="int16",
-        device=OUTPUT_DEVICE_INDEX,
+        device=resolve_device(OUTPUT_DEVICE_NAME, "output"),
         blocksize=CHUNK * 3,
     ) as stream:
         while True:

@@ -19,8 +19,9 @@ import numpy as np
 import sounddevice as sd
 from scipy import signal as scipy_signal
 from .config import (
-    DEVICE_INDEX, SAMPLE_RATE, HW_SAMPLE_RATE, CHANNELS, CHUNK,
+    DEVICE_NAME, SAMPLE_RATE, HW_SAMPLE_RATE, CHANNELS, CHUNK,
     NOISE_INIT_SEC, SPEECH_DELTA, VAD_MODE,
+    resolve_device,
 )
 from . import state as _state
 from .asr import recognize
@@ -116,7 +117,7 @@ def run_audio_pipeline(on_asr_text, log=print, running=None):
     threading.Thread(target=_resample_worker, daemon=True).start()
 
     with sd.InputStream(
-        device=DEVICE_INDEX,
+        device=resolve_device(DEVICE_NAME, "input"),
         samplerate=HW_SAMPLE_RATE,
         channels=CHANNELS,
         dtype="float32",
