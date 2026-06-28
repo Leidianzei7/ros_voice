@@ -26,15 +26,17 @@ class UserMemory:
         self._dir = Path(data_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
 
-        self._profile_path  = self._dir / "user_profile.json"
-        self._history_path  = self._dir / "conversation_history.json"
-        self._memory_path   = self._dir / "important_memories.json"
+        self._profile_path = self._dir / "user_profile.json"
+        self._memory_path  = self._dir / "important_memories.json"
         self._lock = threading.Lock()
+
+        # 对话历史仅内存，重启清零
+        self._history: list = []
 
         self._ensure_files()
 
     def _ensure_files(self):
-        for p in [self._profile_path, self._history_path, self._memory_path]:
+        for p in [self._profile_path, self._memory_path]:
             if not p.exists():
                 p.write_text("[]" if p != self._profile_path else "{}", encoding="utf-8")
 
@@ -58,7 +60,7 @@ class UserMemory:
         return self._read_json(self._profile_path, {})
 
     def get_history(self, n: int = 10) -> list:
-        return self._read_json(self._history_path, [])[-n:]
+        return self._history[-n:] if self._history else []
 
     def get_memories(self) -> list:
         return self._read_json(self._memory_path, [])
@@ -102,15 +104,12 @@ class UserMemory:
     # ── 写入 ──────────────────────────────────────────────
 
     def add_turn(self, user_text: str, assistant_text: str):
-        history = self._read_json(self._history_path, [])
-        history.append({
+        self._history.append({
             "user": user_text,
             "assistant": assistant_text,
-            "time": datetime.now().isoformat(),
         })
-        if len(history) > 50:
-            history = history[-50:]
-        self._write_json(self._history_path, history)
+        if len(self._history) > 50:
+            self._history = self._history[-50:]
 
     def extract_and_save(self, user_text: str, assistant_text: str):
         """用 LLM 从对话中提取画像更新和重要记忆（在独立线程中运行）。"""
