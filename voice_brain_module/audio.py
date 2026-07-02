@@ -64,12 +64,14 @@ def run_audio_pipeline(on_asr_text, log=print, running=None, active=None):
     if active is None:
         active = running
 
-    while running.is_set():
-        raw_q   = queue.Queue(maxsize=100)
-        audio_q = queue.Queue()
-        status_q = queue.Queue()
+    import time as _time
 
-        import time as _time
+    while running.is_set():
+        raw_q    = queue.Queue(maxsize=100)
+        audio_q  = queue.Queue()
+        status_q = queue.Queue()
+        stream_dead = threading.Event()   # 看门狗：流无响应时由 _resample_worker 设置
+
         cb_total    = [0]
         cb_overflow = [0]
         last_report = [_time.monotonic()]
@@ -87,7 +89,8 @@ def run_audio_pipeline(on_asr_text, log=print, running=None, active=None):
                 pass
 
         def _resample_worker():
-            while running.is_set():
+            last_frame = _time.monotonic()
+            while running.is_set() and not stream_dead.is_set():
                 while not status_q.empty():
                     try:
                         log(f"[音频状态] {status_q.get_nowait()}")
@@ -103,12 +106,23 @@ def run_audio_pipeline(on_asr_text, log=print, running=None, active=None):
                     cb_total[0] = 0
                     cb_overflow[0] = 0
                     last_report[0] = now
+                # TTS 期间：从源头截断，排空两个队列，VAD 自然得不到数据
+                if not active.is_set():
+                    _drain(raw_q)
+                    _drain(audio_q)
+                    active.wait(0.1)
+                    last_frame = _time.monotonic()  # mute 期间重置看门狗
+                    continue
                 try:
                     raw = raw_q.get(timeout=0.1)
+                    last_frame = _time.monotonic()
                     chunk = scipy_signal.resample_poly(raw, up=1, down=3).astype(np.float32)
                     audio_q.put(chunk)
                 except queue.Empty:
-                    continue
+                    # 3 秒收不到帧：ALSA 流已在 C 层崩溃，Python 感知不到异常
+                    if _time.monotonic() - last_frame > 3.0:
+                        log("[音频] 3 秒无音频帧，ALSA 流可能已崩溃，触发重启...")
+                        stream_dead.set()
 
         threading.Thread(target=_resample_worker, daemon=True).start()
 
@@ -135,7 +149,8 @@ def run_audio_pipeline(on_asr_text, log=print, running=None, active=None):
                     else:
                         log("（未识别到有效内容）")
 
-                run_vad(audio_q, running, _on_speech, log, noise_floor, active=active)
+                run_vad(audio_q, running, _on_speech, log, noise_floor,
+                        stream_dead=stream_dead)
         except Exception as e:
             log(f"[音频] 流异常: {e}，1 秒后重试...")
-            running.wait(1.0)
+        running.wait(1.0)

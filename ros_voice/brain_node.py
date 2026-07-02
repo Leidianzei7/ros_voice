@@ -92,8 +92,6 @@ class BrainNode(Node):
                     full_ctx_parts.append(memory_ctx)
                 full_ctx = "\n\n".join(full_ctx_parts) if full_ctx_parts else ""
 
-                # TTS 开始前静音，防止自己的回答被识别
-                self._listen_pub.publish(String(data="mute"))
                 instructions, spoken = process_command(
                     cmd, log=self.get_logger().info,
                     vision_context=full_ctx)

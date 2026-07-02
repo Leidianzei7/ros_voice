@@ -29,6 +29,7 @@ def listen_for_commands(on_command, log=print, running=None,
     def _on_text(text):
         # 持续监听模式：每句话直接当指令
         if not wake_required_ref["wake_required"]:
+            active.clear()   # 立刻静音，不等 brain_node 的 mute 话题回来
             on_command(text)
             return
 
@@ -36,12 +37,14 @@ def listen_for_commands(on_command, log=print, running=None,
         if pos >= 0:
             cmd = text[pos + ww_len:].strip("，。,.： ")
             if cmd:
+                active.clear()
                 on_command(cmd)
             else:
                 log("已唤醒，等待指令...")
                 waiting["flag"] = True
         elif waiting["flag"]:
             waiting["flag"] = False
+            active.clear()
             on_command(text)
 
     run_audio_pipeline(on_asr_text=_on_text, log=log, running=running,
