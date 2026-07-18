@@ -22,6 +22,33 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 | `brain_node` | `/voice/command` `/vision/scene_objects` `/vision/emotion_context` | `/command` (String, JSON) `/voice/listen_mode` | Qwen LLM 语义理解、视觉/情绪上下文注入、TTS 口语回复 |
 | `control_node` | `/command` | `/cmd_vel` (Twist) `/arm/grasp_command` (String) | 解析 JSON 指令数组，驱动底盘 + 机械臂 |
 
+### voice_node 控制话题
+
+`voice_node` 的麦克风监听行为由两个话题共同控制：
+
+| 话题 | 方向 | 优先级 | 说明 |
+|------|------|--------|------|
+| `/voice/listen_mode` | brain_node → voice_node | **权威** | 由对话状态驱动的监听模式切换 |
+| `/voice/mute` | 任意节点 → voice_node | 低于 listen_mode | 外部节点（底盘/机械臂）请求静音/解除 |
+
+**`/voice/listen_mode` 三种模式：**
+
+| msg.data | 麦克风 | 唤醒词 | 场景 |
+|----------|--------|--------|------|
+| `"mute"` | 关闭 | — | TTS 播放时，brain_node 发此指令静音 |
+| `"continuous"` | 开启 | **不需要** | 机器人问了问题等用户回答 |
+| `"command"` | 开启 | **需要** | 默认状态、对话结束后 |
+
+**`/voice/mute` 外部控制：**
+
+```bash
+ros2 topic pub /voice/mute '{data: "mute"}'    # 静音（机械臂抓取、底盘运动等）
+ros2 topic pub /voice/mute '{data: "unmute"}'  # 解除，恢复到 brain_node 上次模式
+```
+
+- `"unmute"` 时恢复到 brain_node 通过 `/voice/listen_mode` 最后设置的模式（command/continuous），不破坏对话状态。
+- brain_node 随时可通过 `/voice/listen_mode` 覆盖外部请求。
+
 ## 目录结构
 
 ```
