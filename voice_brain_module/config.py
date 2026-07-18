@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
+import re
 from pypinyin import lazy_pinyin
 
 # ── 模型路径（SenseVoice ONNX 模型，由环境变量优先）──────────
@@ -56,7 +57,7 @@ CHANNELS            = 1
 CHUNK               = 1024   # 每次读取帧数，越小延迟越低
 
 # ── VAD 参数 ──────────────────────────────────────────────
-SPEECH_HOLD_SEC = 1.2   # 停顿多久后触发识别（秒）
+SPEECH_HOLD_SEC = 1.5   # 停顿多久后触发识别（秒）；调大可减少把一句话切碎
 MIN_SPEECH_SEC  = 0.3   # 有效语音最短时长（秒），低于此值丢弃
 
 # ── VAD 模式选择 ───────────────────────────────────────────
@@ -82,6 +83,26 @@ _WW_LEN         = len(WAKE_WORD)
 _WWS_LEN        = len(WAKE_WORD_SHORT)
 _WW_PINYIN      = "".join(lazy_pinyin(WAKE_WORD))       # "xiaozhixiaozhi"
 _WWS_PINYIN     = "".join(lazy_pinyin(WAKE_WORD_SHORT)) # "xiaozhi"
+
+# ── 识别文本有效性判断 ─────────────────────────────────────
+# 去掉标点/空白后剩下的“有效字符”（中日文字、字母、数字）
+_CORE_RE = re.compile(r"[^\w一-鿿]", re.UNICODE)
+# VAD 误切常产出单字碎片（如 "我。"）。默认要求 ≥2 个有效字才算有效发言，
+# 但下列单字是真实的简短回答/短指令，需放行（尤其持续监听里回答问句时）。
+VALID_SHORT = {"好", "嗯", "对", "是", "不", "行", "要", "停", "走", "来", "去"}
+
+
+def is_meaningful(text: str) -> bool:
+    """判断识别文本是否为有效发言（排除纯标点，以及单字误切碎片）。"""
+    if not text:
+        return False
+    core = _CORE_RE.sub("", text)   # 去掉所有标点和空白
+    if not core:
+        return False                # 纯标点，如 "。"
+    if len(core) >= 2:
+        return True                 # 两字及以上视为正常发言
+    return core in VALID_SHORT      # 单字：只放行白名单里的有效简短回答
+
 
 # ── LLM 配置 ──────────────────────────────────────────────
 # 必须设置环境变量 DASHSCOPE_API_KEY，不提供默认值（防止密钥泄露）

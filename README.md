@@ -18,8 +18,8 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 
 | 节点 | 订阅 | 发布 | 功能 |
 |------|------|------|------|
-| `voice_node` | — | `/voice/command` (String) | 麦克风采音、VAD 切句、SenseVoice ONNX 识别、唤醒词过滤 |
-| `brain_node` | `/voice/command` `/vision/scene_objects` `/vision/emotion_context` | `/command` (String, JSON) | Qwen LLM 语义理解、视觉/情绪上下文注入、TTS 口语回复 |
+| `voice_node` | `/voice/listen_mode` `/voice/mute` | `/voice/command` (String) | 麦克风采音、VAD 切句、SenseVoice ONNX 识别、唤醒词过滤 |
+| `brain_node` | `/voice/command` `/vision/scene_objects` `/vision/emotion_context` | `/command` (String, JSON) `/voice/listen_mode` | Qwen LLM 语义理解、视觉/情绪上下文注入、TTS 口语回复 |
 | `control_node` | `/command` | `/cmd_vel` (Twist) `/arm/grasp_command` (String) | 解析 JSON 指令数组，驱动底盘 + 机械臂 |
 
 ## 目录结构

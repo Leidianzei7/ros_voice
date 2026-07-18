@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 voice_node: 纯 ROS 层。
-发布 /voice/command — 用户指令文本。
-订阅 /voice/listen_mode — brain_node 控制监听模式。
+发布 /voice/command   — 用户指令文本。
+订阅 /voice/listen_mode — brain_node 控制监听模式 (mute/continuous/command)。
+订阅 /voice/mute        — 任意节点可发布，收到即静音麦克风（与 TTS 时静音相同）。
 """
 import threading
 
@@ -19,12 +20,18 @@ class VoiceNode(Node):
         super().__init__("voice_node")
         self._cmd_pub = self.create_publisher(String, "/voice/command", 10)
         self.create_subscription(String, "/voice/listen_mode", self._on_listen_mode, 10)
+        self.create_subscription(String, "/voice/mute", self._on_mute, 10)
 
         self._listen_mode = {"wake_required": True}
         self._running = threading.Event()
         self._active  = threading.Event()
         self._running.set()
         self._active.set()
+
+    def _on_mute(self, msg: String):
+        """收到 /voice/mute 话题即静音麦克风，与 TTS 播放时静音机制相同。"""
+        self.get_logger().info(f"收到静音指令: {msg.data}")
+        self._active.clear()
 
     def _on_listen_mode(self, msg: String):
         """brain_node 控制监听模式。"""

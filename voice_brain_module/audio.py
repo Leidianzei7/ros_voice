@@ -18,7 +18,7 @@ from scipy import signal as scipy_signal
 from .config import (
     DEVICE_NAME, SAMPLE_RATE, HW_SAMPLE_RATE, CHANNELS, CHUNK,
     NOISE_INIT_SEC, SPEECH_DELTA, VAD_MODE,
-    resolve_device,
+    resolve_device, is_meaningful,
 )
 from .asr import recognize
 from .vad import run_vad
@@ -143,7 +143,9 @@ def run_audio_pipeline(on_asr_text, log=print, running=None, active=None):
                 def _on_speech(audio):
                     log("⏳ 识别中...")
                     text = recognize(audio)
-                    if text.strip():
+                    # 有效性判断提前到打印之前：纯标点/单字碎片（如 "。"、"我。"）
+                    # 不再显示到终端，也不下发
+                    if is_meaningful(text):
                         log(f"🗣  {text}")
                         on_asr_text(text)
                     else:
