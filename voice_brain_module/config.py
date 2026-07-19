@@ -114,7 +114,7 @@ if not LLM_API_KEY:
         "或在 ~/.bashrc 中永久添加此行。"
     )
 LLM_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-LLM_MODEL    = "qwen3.7-plus"
+LLM_MODEL    = "qwen3.6-flash"
 
 # ── TTS 配置 ──────────────────────────────────────────────
 # 可用中文音色（CosyVoice v2）：
