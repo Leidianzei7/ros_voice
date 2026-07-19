@@ -26,10 +26,12 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 
 `voice_node` 的麦克风监听行为由两个话题共同控制：
 
-| 话题 | 方向 | 优先级 | 说明 |
-|------|------|--------|------|
-| `/voice/listen_mode` | brain_node → voice_node | **权威** | 由对话状态驱动的监听模式切换 |
-| `/voice/mute` | 任意节点 → voice_node | 低于 listen_mode | 外部节点（底盘/机械臂）请求静音/解除 |
+| 话题 | 方向 | 说明 |
+|------|------|------|
+| `/voice/listen_mode` | brain_node → voice_node | 由对话状态驱动的监听模式切换 |
+| `/voice/mute` | 任意节点 → voice_node | 外部节点（底盘/机械臂）静音开关 |
+
+两者都直接开关麦克风，**没有优先级之分，后到的消息生效**。
 
 **`/voice/listen_mode` 三种模式：**
 
@@ -43,11 +45,12 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 
 ```bash
 ros2 topic pub /voice/mute '{data: "mute"}'    # 静音（机械臂抓取、底盘运动等）
-ros2 topic pub /voice/mute '{data: "unmute"}'  # 解除，恢复到 brain_node 上次模式
+ros2 topic pub /voice/mute '{data: "unmute"}'  # 解除静音
 ```
 
-- `"unmute"` 时恢复到 brain_node 通过 `/voice/listen_mode` 最后设置的模式（command/continuous），不破坏对话状态。
-- brain_node 随时可通过 `/voice/listen_mode` 覆盖外部请求。
+- 与 TTS 播放时的静音走**同一条通路**（从音频源头截断），行为完全一致。
+- `"unmute"` 只重新打开麦克风，不改变唤醒词设置（command/continuous 保持不变）。
+- `"mute"` 之外的任意内容都按静音处理，只有 `"unmute"` 解除。
 
 ## 目录结构
 
