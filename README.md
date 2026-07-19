@@ -9,41 +9,18 @@ ROS 2 语音交互功能包。麦克风采音 → 离线 ASR → 唤醒词检测
   │
   ▼
 voice_node  ──/voice/command──▶  brain_node  ──/command──▶  control_node
-  │      ▲                           │                            │
-  │      └────/voice/speak───────────┘                            │
-  │                                                               │
-采音+VAD+ASR                    LLM推理（只思考不出声）      /cmd_vel 底盘控制
-唤醒词过滤 + TTS播报 + 放歌      视觉/情绪上下文注入        /arm/grasp_command 机械臂
+  │                                  │                            │
+采音+VAD+ASR                    LLM推理+TTS播报              /cmd_vel 底盘控制
+唤醒词过滤                  视觉/情绪上下文注入              /arm/grasp_command 机械臂
 ```
-
-音频硬件（麦克风+扬声器）全部归 `voice_node`，这样它才能在出声期间可靠闭麦。
 
 ### 节点说明
 
 | 节点 | 订阅 | 发布 | 功能 |
 |------|------|------|------|
-| `voice_node` | `/voice/listen_mode` `/voice/speak` | `/voice/command` (String) | 独占音频硬件：采音、VAD 切句、SenseVoice 识别、唤醒词过滤，以及 TTS 播报与放歌 |
-| `brain_node` | `/voice/command` `/vision/scene_objects` `/vision/emotion_context` | `/command` (String, JSON) `/voice/speak` (String, JSON) | Qwen LLM 语义理解、视觉/情绪上下文注入。**只思考不出声**，播报交 voice_node |
+| `voice_node` | `/voice/listen_mode` | `/voice/command` (String) | 麦克风采音、VAD 切句、SenseVoice ONNX 识别、唤醒词过滤 |
+| `brain_node` | `/voice/command` `/vision/scene_objects` `/vision/emotion_context` | `/command` (String, JSON) `/voice/listen_mode` | Qwen LLM 语义理解、视觉/情绪上下文注入、TTS 口语回复 |
 | `control_node` | `/command` | `/cmd_vel` (Twist) `/arm/grasp_command` (String) | 解析 JSON 指令数组，驱动底盘 + 机械臂 |
-
-## 播报与闭麦
-
-**所有出声都由 `voice_node` 负责**，brain_node 只思考。理由是：谁握着扬声器，
-谁才能可靠地在出声期间闭麦。情绪干预由视觉话题触发、不经过 voice_node，
-若在 brain 侧直接播报，voice_node 无从得知，会把机器人自己的声音当成用户指令收回来。
-
-brain_node 处理完一轮就发一条 `/voice/speak`：
-
-```json
-{"text": "好的，这就给您唱", "songs": ["茉莉花"], "next_mode": "continuous"}
-```
-
-voice_node 收到后串行执行：**闭麦 → TTS 播报 → 放歌 → 置轮次模式 → 开麦**。
-闭麦贯穿全过程，60 秒的歌也不会被自己听见。多条任务排队，情绪干预的播报会
-自然接在当前播报之后，不打断也不重叠。
-
-> ⚠️ `/voice/speak` 必须在 brain_node 的 `finally` 中无条件发出（哪怕 `text` 为空）。
-> voice_node 识别到指令时已自行闭麦，只有收到这条消息才会恢复监听——漏发即永久静音。
 
 ### voice_node 控制话题
 
