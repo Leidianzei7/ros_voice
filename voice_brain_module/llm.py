@@ -14,6 +14,8 @@ def _compact_param(name: str, p: dict) -> str:
         if opts and opts[0] == "_LAZY_":
             from .commands import _resolve_song_options
             opts = _resolve_song_options() or ["(曲库为空)"]
+            opts_str = " | ".join(opts)
+            return f'{name}=[必须从以下歌名中选择，禁止编造：{opts_str}]'
         opts_str = " | ".join(opts)
         return f'{name}=[{opts_str}]'
     if p.get("range"):
