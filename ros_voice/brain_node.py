@@ -3,7 +3,7 @@
 """
 brain_node: 纯 ROS 层。
 订阅 /voice/command          — 用户指令文本。
-订阅 /vision/scene_objects    — 桌面物体(JSON)。
+订阅 /vision/scene_objects    — 视野内物体(JSON)。
 订阅 /vision/emotion_context  — 用户情绪(JSON)。
 发布 /command                 — JSON 指令数组。
 发布 /voice/listen_mode       — 控制 voice_node 监听模式。

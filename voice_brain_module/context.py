@@ -94,7 +94,7 @@ class ContextPipeline:
         if objs:
             names = [self._fmt_obj(o) for o in objs["objects"]]
             if names:
-                parts.append(f"【当前桌面物体】共{objs['count']}个：{', '.join(names)}")
+                parts.append(f"【当前视野物体】共{objs['count']}个：{', '.join(names)}")
             if objs["graspable"]:
                 gnames = [self._fmt_obj(o) for o in objs["graspable"]]
                 parts.append(f"【可抓取物体】{', '.join(gnames)}")
