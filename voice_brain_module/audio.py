@@ -34,8 +34,15 @@ def _drain(q):
 
 def _calibrate_noise(audio_q, log):
     from .tts import stream_play
+
+    def _safe_play(text):
+        try:
+            stream_play(text)
+        except Exception as e:
+            log(f"⚠ 校准提示播报失败（输出设备不可用？）: {e}")
+
     log("🔇 即将校准底噪，请保持安静...")
-    stream_play("请保持安静，正在校准底噪")
+    _safe_play("请保持安静，正在校准底噪")
     _drain(audio_q)
 
     log(f"🔇 校准中（{NOISE_INIT_SEC:.1f}秒）...")
@@ -54,7 +61,7 @@ def _calibrate_noise(audio_q, log):
     db = lambda r: 20 * np.log10(max(r, 1))
     log(f"📊 底噪 {db(noise_floor):.1f} dB，检测阈值 {db(threshold):.1f} dB")
 
-    stream_play("校准完成，可以开始说话了")
+    _safe_play("校准完成，可以开始说话了")
     _drain(audio_q)
     return noise_floor
 
@@ -66,6 +73,7 @@ def run_audio_pipeline(on_asr_text, log=print, running=None, active=None):
 
     import time as _time
 
+    _restart_backoff = 0          # 连续失败时指数增长，防止打爆 TTS API 配额
     while running.is_set():
         raw_q    = queue.Queue(maxsize=100)
         audio_q  = queue.Queue()
@@ -154,5 +162,9 @@ def run_audio_pipeline(on_asr_text, log=print, running=None, active=None):
                 run_vad(audio_q, running, _on_speech, log, noise_floor,
                         stream_dead=stream_dead)
         except Exception as e:
-            log(f"[音频] 流异常: {e}，1 秒后重试...")
-        running.wait(1.0)
+            _restart_backoff = min(_restart_backoff + 1, 30)
+            log(f"[音频] 流异常: {e}，{_restart_backoff:.0f}s 后重试...")
+            running.wait(_restart_backoff)
+        else:
+            _restart_backoff = 0   # 正常退出（流被主动停止），重置退避
+            running.wait(1.0)
