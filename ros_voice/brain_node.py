@@ -87,14 +87,19 @@ class BrainNode(Node):
 
             if is_intervention:
                 # 格式: __EMOTION_INTERVENTION__:{emotion_zh}:{timestamp}
-                parts = cmd.split(":", 2)
-                emotion_zh = parts[1]
-                queued_at   = float(parts[2])
+                # 用 rsplit 从右侧切时间戳：emotion_zh 来自视觉侧的外部 JSON，
+                # 内容不可控，若含冒号，split(":", 2) 会把它切进时间戳字段，
+                # float() 抛 ValueError 打死整个 work_loop 线程（此处在 try 之外）。
+                head, _, ts = cmd.rpartition(":")
+                emotion_zh = head[len("__EMOTION_INTERVENTION__:"):]
+                queued_at  = float(ts)
                 age = time.time() - queued_at
                 if age > _INTERVENTION_TTL:
                     self.get_logger().info(
                         f"丢弃过期干预 ({age:.1f}s 前): {emotion_zh}"
                     )
+                    # 干预没送达，退还冷却，否则白白堵死后续 30 秒
+                    self._ctx.cancel_intervention()
                     continue   # 跳过，不等 TTS 也不调 LLM
                 self.get_logger().info(f"触发情绪干预: {emotion_zh} (排队 {age:.1f}s)")
                 cmd = (
@@ -145,6 +150,10 @@ class BrainNode(Node):
         因此扫描整段回复是否含问号，而不是只看结尾。
 
         同时记录机器人问的最后一个问题，供下一轮 relevance 检测使用。
+
+        ⚠️ 本方法只允许发 "continuous"/"command"，绝不可发 "mute"。
+           mute 是外部节点的硬静音，一旦 brain_node 发出，用户就无法说话，
+           brain_node 也永远等不到下一条指令去发 unmute —— 直接死锁。
         """
         if not spoken:
             self._listen_pub.publish(String(data="command"))

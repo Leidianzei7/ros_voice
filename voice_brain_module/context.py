@@ -26,6 +26,7 @@ class ContextPipeline:
         self._stable_ratio = stable_ratio
         self._intervention_cooldown = intervention_cooldown
         self._last_intervention_time = 0.0
+        self._prev_intervention_time = 0.0   # 供 cancel_intervention 回退
 
         self._scene_window   = deque()   # [(stamp, data), ...]
         self._emotion_window = deque()
@@ -67,10 +68,23 @@ class ContextPipeline:
         if not stable or not stable.get("intervention_required"):
             return None
         now = time.time()
-        if now - self._last_intervention_time < self._intervention_cooldown:
-            return None
-        self._last_intervention_time = now
+        with self._lock:
+            if now - self._last_intervention_time < self._intervention_cooldown:
+                return None
+            # 这里就记账是为了防止刷屏：情绪帧持续涌入时，冷却未过的帧直接返回
+            # None，不会重复入队。若干预最终没送达，由 cancel_intervention 退还。
+            self._prev_intervention_time = self._last_intervention_time
+            self._last_intervention_time = now
         return stable.get("emotion_zh", "情绪不佳")
+
+    def cancel_intervention(self):
+        """干预未实际送达（排队过久被丢弃），退还冷却。
+
+        feed_emotion 在检测到干预时就抢先记了账，若该干预最终没能播报出去，
+        必须把冷却退回去——否则一次"未遂"的关怀会白白堵死后续 30 秒。
+        """
+        with self._lock:
+            self._last_intervention_time = self._prev_intervention_time
 
     def build_prompt(self) -> str:
         """从去抖后的稳定视觉/情绪状态构建注入 LLM 的上下文字符串。"""

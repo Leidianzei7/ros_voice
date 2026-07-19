@@ -18,39 +18,38 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 
 | 节点 | 订阅 | 发布 | 功能 |
 |------|------|------|------|
-| `voice_node` | `/voice/listen_mode` `/voice/mute` | `/voice/command` (String) | 麦克风采音、VAD 切句、SenseVoice ONNX 识别、唤醒词过滤 |
+| `voice_node` | `/voice/listen_mode` | `/voice/command` (String) | 麦克风采音、VAD 切句、SenseVoice ONNX 识别、唤醒词过滤 |
 | `brain_node` | `/voice/command` `/vision/scene_objects` `/vision/emotion_context` | `/command` (String, JSON) `/voice/listen_mode` | Qwen LLM 语义理解、视觉/情绪上下文注入、TTS 口语回复 |
 | `control_node` | `/command` | `/cmd_vel` (Twist) `/arm/grasp_command` (String) | 解析 JSON 指令数组，驱动底盘 + 机械臂 |
 
 ### voice_node 控制话题
 
-`voice_node` 的麦克风监听行为由两个话题共同控制：
+`voice_node` 的麦克风行为由**唯一话题** `/voice/listen_mode` 控制，四种模式分属**两个正交维度**：
 
-| 话题 | 方向 | 说明 |
-|------|------|------|
-| `/voice/listen_mode` | brain_node → voice_node | 由对话状态驱动的监听模式切换 |
-| `/voice/mute` | 任意节点 → voice_node | 外部节点（底盘/机械臂）静音开关 |
+**维度一 · 轮次模式**（brain_node 每处理完一句发一次，决定"下一句怎么收"）
 
-两者都直接开关麦克风，**没有优先级之分，后到的消息生效**。
+| msg.data | 唤醒词 | 场景 |
+|----------|--------|------|
+| `"continuous"` | **不需要** | 机器人问了问题，等用户直接回答 |
+| `"command"` | **需要** | 默认状态、对话结束后 |
 
-**`/voice/listen_mode` 三种模式：**
+**维度二 · 硬静音**（外部节点如底盘/机械臂，任意时刻可发）
 
-| msg.data | 麦克风 | 唤醒词 | 场景 |
-|----------|--------|--------|------|
-| `"mute"` | 关闭 | — | TTS 播放时，brain_node 发此指令静音 |
-| `"continuous"` | 开启 | **不需要** | 机器人问了问题等用户回答 |
-| `"command"` | 开启 | **需要** | 默认状态、对话结束后 |
-
-**`/voice/mute` 外部控制：**
+| msg.data | 行为 |
+|----------|------|
+| `"mute"` | 麦克风彻底关闭，**且此后 continuous/command 一律无法开启** |
+| `"unmute"` | 解除硬静音，按最后一次轮次模式恢复 |
 
 ```bash
-ros2 topic pub /voice/mute '{data: "mute"}'    # 静音（机械臂抓取、底盘运动等）
-ros2 topic pub /voice/mute '{data: "unmute"}'  # 解除静音
+ros2 topic pub /voice/listen_mode '{data: "mute"}'    # 机械臂抓取/底盘运动前
+ros2 topic pub /voice/listen_mode '{data: "unmute"}'  # 动作完成后
 ```
 
-- 与 TTS 播放时的静音走**同一条通路**（从音频源头截断），行为完全一致。
-- `"unmute"` 只重新打开麦克风，不改变唤醒词设置（command/continuous 保持不变）。
-- `"mute"` 之外的任意内容都按静音处理，只有 `"unmute"` 解除。
+**硬静音是粘性的 —— 只有 `unmute` 能解除。** 即使 `mute` 到达时 brain_node 正思考到一半，它随后发回的 `continuous`/`command` 也不会把麦克风打开（但会记下 `wake_required`，`unmute` 后即以该模式恢复）。
+
+> ⚠️ **brain_node 永远不可以发 `mute`。** 一旦发出，用户无法说话，brain_node 也就永远等不到下一条指令去发 `unmute` —— 直接死锁。`mute`/`unmute` 只能由外部节点成对发出。
+
+未知值按 `command` 处理（fail-open），宁可多要一次唤醒词，也不把麦克风锁死。
 
 ## 目录结构
 
