@@ -265,6 +265,9 @@ def _call_llm(messages: list) -> str:
     )
     raw = ""
     for chunk in stream:
+        # 某些模型（如 qwen3.7-plus）的流式响应会夹杂无 choices 的控制帧
+        if not chunk.choices:
+            continue
         delta = chunk.choices[0].delta.content or ""
         raw += delta
     return raw
