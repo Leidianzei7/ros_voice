@@ -41,8 +41,10 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 | `"unmute"` | 解除硬静音，按最后一次轮次模式恢复 |
 
 ```bash
-ros2 topic pub /voice/listen_mode '{data: "mute"}'    # 机械臂抓取/底盘运动前
-ros2 topic pub /voice/listen_mode '{data: "unmute"}'  # 动作完成后
+# 注意 --once：ros2 topic pub 默认 1 Hz 无限循环，不加会导致 mute 每秒重发，
+# 在别处发的 unmute 一秒内就被压回去。
+ros2 topic pub --once /voice/listen_mode '{data: "mute"}'    # 机械臂抓取/底盘运动前
+ros2 topic pub --once /voice/listen_mode '{data: "unmute"}'  # 动作完成后
 ```
 
 **硬静音是粘性的 —— 只有 `unmute` 能解除。** 即使 `mute` 到达时 brain_node 正思考到一半，它随后发回的 `continuous`/`command` 也不会把麦克风打开（但会记下 `wake_required`，`unmute` 后即以该模式恢复）。
