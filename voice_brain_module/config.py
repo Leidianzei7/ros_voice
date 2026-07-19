@@ -122,3 +122,11 @@ LLM_MODEL    = "qwen-turbo"
 #   longxiaobai_v2（男，活泼）longxiaomiao_v2（女，知性）
 TTS_VOICE       = "longxiaochun_v2"
 TTS_SAMPLE_RATE = 16000
+
+# ── 歌曲播放 ──────────────────────────────────────────────
+# 曲库目录：放 mp3/wav/flac/ogg，文件名（不含扩展名）即歌名，
+# 会自动成为【可用指令集】里"播放歌曲"的可选值，LLM 提示词与校验一并跟随。
+# 曲库为空时，"播放歌曲"指令不会出现，机器人也就不会承诺唱歌。
+SONG_DIR     = os.getenv("SONG_DIR", "") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "songs")
+SONG_MAX_SEC = 60.0     # 单曲播放上限（秒），超时自动淡出停止

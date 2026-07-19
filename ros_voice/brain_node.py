@@ -22,6 +22,7 @@ from std_msgs.msg import String
 from voice_brain_module.context import ContextPipeline
 from voice_brain_module.memory import UserMemory
 from voice_brain_module.pipeline import process_command
+from voice_brain_module.player import play_song
 
 
 class BrainNode(Node):
@@ -38,6 +39,7 @@ class BrainNode(Node):
         self._ctx   = ContextPipeline(window_sec=3.0)
         self._mem   = UserMemory()
         self._last_question = ""   # 机器人上一轮问用户的问题
+        self._pending_songs = []   # 待播歌曲，TTS 说完后由 _play_pending_songs 消费
         self._work_q = queue.Queue()
         threading.Thread(target=self._work_loop, daemon=True).start()
 
@@ -70,13 +72,39 @@ class BrainNode(Node):
         self._work_q.put(msg.data)
 
     def _publish_instructions(self, instructions):
-        """LLM 一返回就发布机械指令（在 TTS 播放之前），让动作和语音基本同步开始。"""
-        if instructions:
-            payload = json.dumps(instructions, ensure_ascii=False)
+        """LLM 一返回就发布机械指令（在 TTS 播放之前），让动作和语音基本同步开始。
+
+        音箱指令（播放歌曲）由 brain_node 本地执行，不下发 /command——control_node
+        没有音频通路。此处只把它挑出来暂存，等 TTS 说完再放，避免抢占扬声器。
+        """
+        self._pending_songs = [
+            c.get("params", {}).get("song")
+            for c in (instructions or [])
+            if c.get("actuator") == "音箱" and c.get("params", {}).get("song")
+        ]
+        remote = [c for c in (instructions or []) if c.get("actuator") != "音箱"]
+
+        if remote:
+            payload = json.dumps(remote, ensure_ascii=False)
             self.get_logger().info(f"发布指令: {payload}")
             self._instr_pub.publish(String(data=payload))
-        else:
+        elif not self._pending_songs:
             self.get_logger().info("无机械指令")
+
+    def _play_pending_songs(self):
+        """播放暂存的歌曲。在 TTS 播完之后调用，阻塞直到放完或达上限。
+
+        期间麦克风仍处于静音态（_check_question_mode 尚未执行），
+        因此不会把歌声当成用户指令收回来。
+        """
+        songs, self._pending_songs = self._pending_songs, []
+        for name in songs:
+            self.get_logger().info(f"播放歌曲: {name}")
+            try:
+                if not play_song(name):
+                    self.get_logger().warn(f"播放失败: {name}")
+            except Exception as e:
+                self.get_logger().error(f"播放异常 {name}: {e}")
 
     def _work_loop(self):
         _INTERVENTION_TTL = 3.0   # 干预消息在队列中最长存活时间（秒）
@@ -131,6 +159,9 @@ class BrainNode(Node):
                     vision_context=full_ctx,
                     on_instructions=self._publish_instructions,
                     last_question=self._last_question)
+
+                # TTS 已播完，此时才放歌，避免与语音抢扬声器
+                self._play_pending_songs()
 
                 # 保存对话历史 + 提取记忆（仅普通对话）
                 if not is_intervention and spoken:

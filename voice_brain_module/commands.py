@@ -96,6 +96,35 @@ COMMANDS: list = [
 ]
 
 
+# ══════════════════════════════════════════
+# 音箱（歌曲播放，由 brain_node 本地执行，不下发 /command）
+# ══════════════════════════════════════════
+# 曲目取自 config.SONG_DIR 实际存在的音频文件：既是 LLM 的可选值，
+# 也是校验依据。曲库为空则整条指令不注册——机器人不会承诺唱它没有的歌。
+def _register_song_command():
+    try:
+        from .player import list_songs
+        songs = list_songs()
+    except Exception:
+        songs = []
+    if not songs:
+        return
+    COMMANDS.append({
+        "actuator": "音箱",
+        "action":   "播放歌曲",
+        "desc":     "播放曲库中的歌曲（最长一分钟，播完自动结束）",
+        "params": {
+            "song": {
+                "options": songs,
+                "desc":    "歌名，必须严格从曲库列表中选一",
+            },
+        },
+    })
+
+
+_register_song_command()
+
+
 # ── 指令校验 ──────────────────────────────────────────────────────
 
 _LOOKUP = {(c["actuator"], c["action"]): c["params"] for c in COMMANDS}
