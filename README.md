@@ -18,9 +18,29 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 
 | 节点 | 订阅 | 发布 | 功能 |
 |------|------|------|------|
-| `voice_node` | `/voice/listen_mode` | `/voice/command` (String) | 麦克风采音、VAD 切句、SenseVoice ONNX 识别、唤醒词过滤 |
-| `brain_node` | `/voice/command` `/vision/scene_objects` `/vision/emotion_context` | `/command` (String, JSON) `/voice/listen_mode` | Qwen LLM 语义理解、视觉/情绪上下文注入、TTS 口语回复 |
+| `voice_node` | `/voice/listen_mode` `/voice/speaking` | `/voice/command` (String) | 麦克风采音、VAD 切句、SenseVoice ONNX 识别、唤醒词过滤 |
+| `brain_node` | `/voice/command` `/vision/scene_objects` `/vision/emotion_context` | `/command` (String, JSON) `/voice/listen_mode` `/voice/speaking` | Qwen LLM 语义理解、视觉/情绪上下文注入、TTS 口语回复 |
 | `control_node` | `/command` | `/cmd_vel` (Twist) `/arm/grasp_command` (String) | 解析 JSON 指令数组，驱动底盘 + 机械臂 |
+
+### 麦克风的三个闸
+
+麦克风由**三个互相独立**的条件控制，全开才收音：
+
+| 闸 | 谁控制 | 关闭时机 | 放开时机 |
+|---|---|---|---|
+| 轮次闸 | voice_node 自己 + brain | 识别到指令即自锁 | brain 发 `continuous`/`command` |
+| 硬静音闸 | 外部节点 | 发 `/voice/listen_mode` 的 `mute` | 发 `unmute` |
+| 播报闸 | brain_node | 发 `/voice/speaking` 的 `start` | 发 `end` |
+
+**播报闸是必需的**：TTS 与放歌都在 brain_node 进程内进行，voice_node 无从感知。
+用户指令那条路本来就靠轮次闸自锁挡住了，但**情绪干预由视觉话题触发、不经过
+voice_node**，没有播报闸机器人就会把自己的声音当成用户指令收回来。
+
+**三闸独立**意味着互不干扰：brain 播报结束只清播报闸，不会解掉机械臂的硬静音；
+外部 `unmute` 也不会在 brain 说到一半时把麦克风打开。
+
+> ⚠️ `/voice/speaking` 的 `start`/`end` 必须成对——brain_node 用 `try/finally`
+> 保证，异常路径也照发。漏发 `end` 即永久静音。
 
 ### voice_node 控制话题
 

@@ -6,7 +6,12 @@ brain_node: 纯 ROS 层。
 订阅 /vision/scene_objects    — 视野内物体(JSON)。
 订阅 /vision/emotion_context  — 用户情绪(JSON)。
 发布 /command                 — JSON 指令数组。
-发布 /voice/listen_mode       — 控制 voice_node 监听模式。
+发布 /voice/listen_mode       — 轮次模式 continuous/command。
+发布 /voice/speaking          — 播报期间闭麦的成对信号 start/end。
+
+TTS 与放歌都在本进程内进行，voice_node 无从感知，因此必须由 brain_node
+显式发 /voice/speaking 告知。情绪干预由视觉话题触发、不经过 voice_node，
+只有这条信号能让它在干预播报期间闭麦。
 
 感知预处理 → ContextPipeline，持久记忆 → UserMemory。
 """
@@ -30,6 +35,7 @@ class BrainNode(Node):
         super().__init__("brain_node")
         self._instr_pub    = self.create_publisher(String, "/command", 10)
         self._listen_pub   = self.create_publisher(String, "/voice/listen_mode", 10)
+        self._speaking_pub = self.create_publisher(String, "/voice/speaking", 10)
         self.create_subscription(String, "/voice/command", self._on_command, 10)
         self.create_subscription(String, "/vision/scene_objects",
                                  self._on_scene_objects, 10)
@@ -94,8 +100,8 @@ class BrainNode(Node):
     def _play_pending_songs(self):
         """播放暂存的歌曲。在 TTS 播完之后调用，阻塞直到放完或达上限。
 
-        期间麦克风仍处于静音态（_check_question_mode 尚未执行），
-        因此不会把歌声当成用户指令收回来。
+        期间麦克风由 /voice/speaking 的 start 信号压着（见 _work_loop 的
+        try/finally），因此不会把歌声当成用户指令收回来。
         """
         songs, self._pending_songs = self._pending_songs, []
         for name in songs:
@@ -143,6 +149,9 @@ class BrainNode(Node):
                 self.get_logger().info(f"收到指令: {cmd}")
 
             spoken = ""
+            # 出声前先闭麦。放在 try 之外确保与 finally 的 end 严格配对；
+            # LLM 思考期间一并闭着，用户指令那条路本来就已自锁，无差别。
+            self._speaking_pub.publish(String(data="start"))
             try:
                 # 拼接感知上下文 + 记忆上下文
                 vision_ctx = self._ctx.build_prompt()
@@ -171,7 +180,9 @@ class BrainNode(Node):
             except Exception as e:
                 self.get_logger().error(f"处理指令失败: {e}")
             finally:
-                # 无论成功失败，都必须恢复监听——否则 voice_node 永久静音（卡死）
+                # 两条都必须无条件发出，否则 voice_node 永久静音（卡死）：
+                # end 松开播报闸，_check_question_mode 松开轮次闸，缺一不可。
+                self._speaking_pub.publish(String(data="end"))
                 self._check_question_mode(spoken)
 
     def _check_question_mode(self, spoken: str):
