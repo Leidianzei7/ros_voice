@@ -99,27 +99,34 @@ COMMANDS: list = [
 # ══════════════════════════════════════════
 # 音箱（歌曲播放，由 brain_node 本地执行，不下发 /command）
 # ══════════════════════════════════════════
-# 曲目取自 config.SONG_DIR 实际存在的音频文件：既是 LLM 的可选值，
-# 也是校验依据。曲库为空则整条指令不注册——机器人不会承诺唱它没有的歌。
+# 曲目列表实时取自 config.SONG_DIR 文件系统，增删文件即时生效，无需重启。
+# options 里的 _LAZY 标记会在校验/构建提示词时替换为当前曲库快照。
+_LAZY = object()
+_COMMANDS_WITH_LAZY_SONGS = False
+
+
 def _register_song_command():
-    try:
-        from .player import list_songs
-        songs = list_songs()
-    except Exception:
-        songs = []
-    if not songs:
-        return
+    global _COMMANDS_WITH_LAZY_SONGS
     COMMANDS.append({
         "actuator": "音箱",
         "action":   "播放歌曲",
         "desc":     "播放曲库中的歌曲（最长一分钟，播完自动结束）",
         "params": {
             "song": {
-                "options": songs,
+                "options": ["_LAZY_"],
                 "desc":    "歌名，必须严格从曲库列表中选一",
             },
         },
     })
+    _COMMANDS_WITH_LAZY_SONGS = True
+
+
+def _resolve_song_options():
+    try:
+        from .player import list_songs
+        return list_songs()
+    except Exception:
+        return []
 
 
 _register_song_command()
@@ -161,11 +168,13 @@ def validate_commands(commands: list) -> tuple[bool, str]:
                 return False, f'第 {i} 条指令缺少参数 "{pname}"'
             value = params[pname]
 
-            if "options" in pspec and value not in pspec["options"]:
-                return False, (
-                    f'第 {i} 条指令参数 "{pname}" 值 "{value}" '
-                    f"不在选项 {pspec['options']} 中"
-                )
+            if "options" in pspec:
+                allowed = _resolve_song_options() if pspec["options"] == ["_LAZY_"] else pspec["options"]
+                if value not in allowed:
+                    return False, (
+                        f'第 {i} 条指令参数 "{pname}" 值 "{value}" '
+                        f"不在选项 {allowed} 中"
+                    )
             if "range" in pspec:
                 try:
                     v = float(value)

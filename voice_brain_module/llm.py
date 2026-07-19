@@ -10,8 +10,12 @@ from .commands import COMMANDS, validate_commands
 
 def _compact_param(name: str, p: dict) -> str:
     if p.get("options"):
-        opts = " | ".join(p["options"])
-        return f'{name}=[{opts}]'
+        opts = p["options"]
+        if opts and opts[0] == "_LAZY_":
+            from .commands import _resolve_song_options
+            opts = _resolve_song_options() or ["(曲库为空)"]
+        opts_str = " | ".join(opts)
+        return f'{name}=[{opts_str}]'
     if p.get("range"):
         lo, hi = p["range"]
         unit = p.get("unit", "")
