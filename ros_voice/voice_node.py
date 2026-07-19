@@ -34,6 +34,7 @@ brain_node 正思考到一半，它随后发回的 continuous/command 也不会�
    用户无法说话，brain_node 也就永远等不到下一条指令去触发 unmute，直接死锁。
 """
 import threading
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -62,12 +63,36 @@ class _MicGate:
         self._round_open = True
         self._hard_muted = False
         self._speaking   = False
+        self._closed_since = None       # 闸门关闭的起始时刻，供看门狗判断
+        self._lock = threading.Lock()   # 回调线程与看门狗线程会并发改这些标志
 
     def _refresh(self):
+        """调用者需持有 _lock。"""
         if self._round_open and not self._hard_muted and not self._speaking:
             self._ev.set()
+            self._closed_since = None
         else:
             self._ev.clear()
+            if self._closed_since is None:
+                self._closed_since = time.monotonic()
+
+    def stuck_seconds(self) -> float:
+        """闸门已连续关闭多久。
+
+        硬静音不计入——那是外部节点有意为之的无限期静音，
+        看门狗无权干涉，否则机械臂抓取途中麦克风会被擅自打开。
+        """
+        with self._lock:
+            if self._hard_muted or self._closed_since is None:
+                return 0.0
+            return time.monotonic() - self._closed_since
+
+    def force_release(self):
+        """看门狗兜底：松开 brain 负责的两个闸，不碰硬静音。"""
+        with self._lock:
+            self._round_open = True
+            self._speaking   = False
+            self._refresh()
 
     # ── Event 接口：供 audio.py / pipeline.py 直接使用 ──
     def is_set(self):        return self._ev.is_set()
@@ -75,21 +100,25 @@ class _MicGate:
 
     def clear(self):
         """pipeline 识别到指令后自锁。"""
-        self._round_open = False
-        self._refresh()
+        with self._lock:
+            self._round_open = False
+            self._refresh()
 
     def set(self):
-        self._round_open = True
-        self._refresh()
+        with self._lock:
+            self._round_open = True
+            self._refresh()
 
     # ── 各条件独立开关 ──
     def set_hard_muted(self, v: bool):
-        self._hard_muted = v
-        self._refresh()
+        with self._lock:
+            self._hard_muted = v
+            self._refresh()
 
     def set_speaking(self, v: bool):
-        self._speaking = v
-        self._refresh()
+        with self._lock:
+            self._speaking = v
+            self._refresh()
 
     @property
     def hard_muted(self):    return self._hard_muted
@@ -109,7 +138,38 @@ class VoiceNode(Node):
         self._listen_mode = {"wake_required": True}
         self._running = threading.Event()
         self._running.set()
-        self._active = _MicGate()      # 三闸合一，见 _MicGate
+        self._stop_ev = threading.Event()   # 初始未置位，供看门狗真正睡眠
+        self._active = _MicGate()           # 三闸合一，见 _MicGate
+
+        threading.Thread(target=self._watchdog_loop, daemon=True).start()
+
+    # ── 看门狗：brain 挂掉时兜底解锁 ──────────────────────────
+
+    # 闸门连续关闭超过此秒数即强制松开。取值要高于任何合法播报的上限：
+    # LLM 思考 ~15s + TTS ~20s + 单曲上限 60s ≈ 95s，故留足余量到 150s。
+    # 正常流程永远碰不到这个阈值，只有 brain_node 崩溃/线程死掉才会触发。
+    _WATCHDOG_SEC = 150.0
+
+    def _watchdog_loop(self):
+        """brain_node 负责的两个闸（轮次闸、播报闸）都依赖它发消息来松开。
+
+        try/finally 挡得住 Python 异常，但挡不住进程被杀、OOM，或 work_loop
+        线程整个死掉——那些情况下麦克风会永久关闭，整机哑掉。此处兜底。
+
+        硬静音不在兜底范围：那是外部节点有意为之的无限期静音，
+        擅自打开会让机械臂抓取途中的静音失效。
+        """
+        # 注意：不能用 self._running.wait()——_running 是"已置位"的运行标志，
+        # Event.wait() 对已置位的事件立刻返回，循环会空转吃满一个 CPU 核。
+        # 这里用一个初始为"未置位"的停止事件，wait 才会真正睡够 5 秒。
+        while not self._stop_ev.wait(5.0):
+            stuck = self._active.stuck_seconds()
+            if stuck > self._WATCHDOG_SEC:
+                self.get_logger().error(
+                    f"麦克风已关闭 {stuck:.0f}s 超过阈值 {self._WATCHDOG_SEC:.0f}s，"
+                    f"brain_node 可能已崩溃——强制恢复监听"
+                )
+                self._active.force_release()
 
     # ── /voice/speaking：brain_node 播报期间闭麦 ──────────────
 
@@ -177,6 +237,7 @@ class VoiceNode(Node):
 
     def stop(self):
         self._running.clear()
+        self._stop_ev.set()          # 唤醒看门狗，立即退出
 
 
 def main():
