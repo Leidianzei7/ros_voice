@@ -6,7 +6,11 @@ brain_node: 纯 ROS 层。
 订阅 /vision/scene_objects    — 视野内物体(JSON)。
 订阅 /vision/emotion_context  — 用户情绪(JSON)。
 发布 /command                 — JSON 指令数组。
-发布 /voice/listen_mode       — 控制 voice_node 监听模式。
+发布 /voice/speak             — 播报任务(JSON)：文本 + 待播歌曲 + 下一轮监听模式。
+
+brain_node 只思考，不出声。播报交给 voice_node——它同时握有麦克风和扬声器，
+能在出声期间可靠闭麦。情绪干预由视觉话题触发、不经过 voice_node，若在此处
+直接播报，voice_node 无从得知，会把机器人自己的声音当成用户指令收回来。
 
 感知预处理 → ContextPipeline，持久记忆 → UserMemory。
 """
@@ -22,14 +26,13 @@ from std_msgs.msg import String
 from voice_brain_module.context import ContextPipeline
 from voice_brain_module.memory import UserMemory
 from voice_brain_module.pipeline import process_command
-from voice_brain_module.player import play_song
 
 
 class BrainNode(Node):
     def __init__(self):
         super().__init__("brain_node")
         self._instr_pub    = self.create_publisher(String, "/command", 10)
-        self._listen_pub   = self.create_publisher(String, "/voice/listen_mode", 10)
+        self._speak_pub    = self.create_publisher(String, "/voice/speak", 10)
         self.create_subscription(String, "/voice/command", self._on_command, 10)
         self.create_subscription(String, "/vision/scene_objects",
                                  self._on_scene_objects, 10)
@@ -39,7 +42,7 @@ class BrainNode(Node):
         self._ctx   = ContextPipeline(window_sec=3.0)
         self._mem   = UserMemory()
         self._last_question = ""   # 机器人上一轮问用户的问题
-        self._pending_songs = []   # 待播歌曲，TTS 说完后由 _play_pending_songs 消费
+        self._pending_songs = []   # 待播歌曲，随播报任务一起交给 voice_node
         self._work_q = queue.Queue()
         threading.Thread(target=self._work_loop, daemon=True).start()
 
@@ -74,8 +77,8 @@ class BrainNode(Node):
     def _publish_instructions(self, instructions):
         """LLM 一返回就发布机械指令（在 TTS 播放之前），让动作和语音基本同步开始。
 
-        音箱指令（播放歌曲）由 brain_node 本地执行，不下发 /command——control_node
-        没有音频通路。此处只把它挑出来暂存，等 TTS 说完再放，避免抢占扬声器。
+        音箱指令（播放歌曲）不下发 /command——control_node 没有音频通路。
+        此处挑出来暂存，随后与播报文本一起交给 voice_node，由它闭麦后串行播放。
         """
         self._pending_songs = [
             c.get("params", {}).get("song")
@@ -90,21 +93,6 @@ class BrainNode(Node):
             self._instr_pub.publish(String(data=payload))
         elif not self._pending_songs:
             self.get_logger().info("无机械指令")
-
-    def _play_pending_songs(self):
-        """播放暂存的歌曲。在 TTS 播完之后调用，阻塞直到放完或达上限。
-
-        期间麦克风仍处于静音态（_check_question_mode 尚未执行），
-        因此不会把歌声当成用户指令收回来。
-        """
-        songs, self._pending_songs = self._pending_songs, []
-        for name in songs:
-            self.get_logger().info(f"播放歌曲: {name}")
-            try:
-                if not play_song(name):
-                    self.get_logger().warn(f"播放失败: {name}")
-            except Exception as e:
-                self.get_logger().error(f"播放异常 {name}: {e}")
 
     def _work_loop(self):
         _INTERVENTION_TTL = 3.0   # 干预消息在队列中最长存活时间（秒）
@@ -160,9 +148,6 @@ class BrainNode(Node):
                     on_instructions=self._publish_instructions,
                     last_question=self._last_question)
 
-                # TTS 已播完，此时才放歌，避免与语音抢扬声器
-                self._play_pending_songs()
-
                 # 保存对话历史 + 提取记忆（仅普通对话）
                 if not is_intervention and spoken:
                     self._mem.add_turn(cmd, spoken)
@@ -172,45 +157,33 @@ class BrainNode(Node):
                 self.get_logger().error(f"处理指令失败: {e}")
             finally:
                 # 无论成功失败，都必须恢复监听——否则 voice_node 永久静音（卡死）
-                self._check_question_mode(spoken)
+                self._dispatch_speech(spoken)
 
-    def _check_question_mode(self, spoken: str):
-        """如果口语回复中包含问句，通知 voice_node 进入持续监听模式。
+    def _dispatch_speech(self, spoken: str):
+        """把播报文本 + 待播歌曲 + 下一轮监听模式，一次性交给 voice_node。
 
         问句可能出现在句中而非句末（如"…是不是还没说完呀？或者想聊点别的…"），
         因此扫描整段回复是否含问号，而不是只看结尾。
 
-        同时记录机器人问的最后一个问题，供下一轮 relevance 检测使用。
+        本方法必须在 finally 中被无条件调用：voice_node 在识别到指令时已自行
+        闭麦，只有收到这条消息才会恢复监听。哪怕 text 为空也要发，否则永久静音。
 
-        ⚠️ 本方法只允许发 "continuous"/"command"，绝不可发 "mute"。
-           mute 是外部节点的硬静音，一旦 brain_node 发出，用户就无法说话，
-           brain_node 也永远等不到下一条指令去发 unmute —— 直接死锁。
+        ⚠️ next_mode 只允许 continuous/command。mute 是外部节点的硬静音，
+           brain_node 一旦发出，用户就无法说话，也就永远等不到下一条指令去
+           发 unmute——直接死锁。
         """
-        if not spoken:
-            self._listen_pub.publish(String(data="command"))
-            return
-        text = spoken.strip()
-        last = text.split("\n")[-1].strip()
-        if "？" in text or "?" in text or last.endswith("吗") or last.endswith("呢"):
+        songs, self._pending_songs = self._pending_songs, []
+        text = (spoken or "").strip()
+
+        if text and ("？" in text or "?" in text
+                     or text.split("\n")[-1].strip().endswith(("吗", "呢"))):
+            next_mode = "continuous"
+            self._last_question = text     # 记录本次问句，供下一轮检测
             self.get_logger().info("检测到问句，开启持续监听")
-            self._listen_pub.publish(String(data="continuous"))
-            self._last_question = text   # 记录本次问句，供下一轮检测
         else:
-            self._listen_pub.publish(String(data="command"))
-            self._last_question = ""     # 非问句，清除上一次的问句记录
+            next_mode = "command"
+            self._last_question = ""       # 非问句，清除上一次的问句记录
 
-
-def main():
-    rclpy.init()
-    node = BrainNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-    rclpy.shutdown()
-
-
-if __name__ == "__main__":
-    main()
+        self._speak_pub.publish(String(data=json.dumps(
+            {"text": text, "songs": songs, "next_mode": next_mode},
+            ensure_ascii=False)))

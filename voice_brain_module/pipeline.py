@@ -58,16 +58,19 @@ def listen_for_commands(on_command, log=print, running=None,
 
 def process_command(cmd_text, log=print, vision_context="", on_instructions=None,
                     last_question=""):
-    """LLM 推理 + 语音回复播报一体化。
+    """LLM 推理，返回 (指令列表, 待播报文本)。**本函数不播报**。
 
-    on_instructions: 可选回调，LLM 一返回就调用（在 TTS 播放之前），
+    播报统一由 voice_node 负责——它同时握有麦克风和扬声器，能在播报期间
+    可靠闭麦。brain_node 拿到返回值后发 /voice/speak 交给 voice_node 播。
+    这样情绪干预（不经过 voice_node 触发）的播报也能正常闭麦。
+
+    on_instructions: 可选回调，LLM 一返回就调用（在播报之前），
                      让机械动作和语音播报基本同时开始，而不必等一整句话说完。
     last_question:   机器人上一轮问用户的问题。若设置了该参数，会先用轻量 LLM
                      判断用户的语音是否在回答机器人；若判定用户在对别人说话，
                      则直接回复"请问您在和我讲话吗？"并跳过主 LLM 调用。
     """
     from .llm import generate_response, is_addressing_robot, classify_meta_response
-    from .tts import stream_play
 
     _META_QUESTION = "请问您在和我讲话吗？"
 
@@ -80,7 +83,6 @@ def process_command(cmd_text, log=print, vision_context="", on_instructions=None
         if intent in ("NOT_ADDRESSING", "REJECTING"):
             spoken = "看起来您有些忙，等您有空了再叫我吧。"
             log(f"元对话结束 (意图={intent}): {spoken}")
-            stream_play(spoken)
             return [], spoken
         # intent == "ADDRESSING": 用户确认在对话，走正常 LLM 流程
 
@@ -88,7 +90,6 @@ def process_command(cmd_text, log=print, vision_context="", on_instructions=None
     elif last_question and not is_addressing_robot(cmd_text, last_question):
         spoken = _META_QUESTION
         log(f"检测到用户可能不在对话，回复: {spoken}")
-        stream_play(spoken)
         return [], spoken
 
     spoken, commands = generate_response(cmd_text, vision_context=vision_context)
@@ -96,5 +97,4 @@ def process_command(cmd_text, log=print, vision_context="", on_instructions=None
         on_instructions(commands)
     if spoken:
         log(f"语音回复: {spoken}")
-        stream_play(spoken)
     return commands, spoken
