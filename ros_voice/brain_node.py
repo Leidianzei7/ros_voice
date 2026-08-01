@@ -34,8 +34,9 @@ from std_msgs.msg import String
 from voice_brain_module import emergency as emg
 from voice_brain_module.commands import build_abort_command
 from voice_brain_module.config import (
-    EMERGENCY_ASK_TEXT, EMERGENCY_ASK_WAIT_SEC, EMERGENCY_CANCELLED_TEXT,
-    EMERGENCY_CHANNEL_BY_EMOTION, EMERGENCY_COOLDOWN_SEC, EMERGENCY_GOING_TEXT,
+    EMERGENCY_ABORT_WINDOW_SEC, EMERGENCY_ASK_TEXT, EMERGENCY_ASK_WAIT_SEC,
+    EMERGENCY_CANCELLED_TEXT, EMERGENCY_CHANNEL_BY_EMOTION,
+    EMERGENCY_COOLDOWN_SEC, EMERGENCY_GOING_TEXT,
 )
 from voice_brain_module.context import ContextPipeline
 from voice_brain_module.memory import UserMemory
@@ -253,7 +254,38 @@ class BrainNode(Node):
         # 先发起再播报：紧急侧可以立刻开始拨号，机器人那句"正在帮你拨打"
         # 与拨号并行发生，省下一整句 TTS 的时间（2~3 秒）
         self._publish_initiate(task)
+        self._open_abort_window()
         self._speak_fixed(EMERGENCY_GOING_TEXT.get(channel, EMERGENCY_GOING_TEXT["call"]))
+
+    def _open_abort_window(self):
+        """开启中止监听窗口，并安排到点自动关闭。
+
+        **谁发起谁负责开关**：这次联络是语音侧发起的，语音侧就该自己声明
+        "允许用户反悔"，而不是指望紧急侧替它发 —— 紧急侧只管拨号/发短信，
+        它不知道这一次该不该允许中止。紧急侧自行发起的呼叫同理，由它自己发。
+
+        必须安排关闭：用户一直没喊停的话没人来关，紧急态期间麦克风强制开着、
+        机械臂的 mute 也被旁路，只靠 voice_node 那 180 秒兜底代价太大。
+        """
+        with self._emg_lock:
+            self._emergency = True
+        self._listen_pub.publish(String(data="emergency"))
+        self.get_logger().warn(
+            f"开启中止窗口 {EMERGENCY_ABORT_WINDOW_SEC:.0f}s：用户此间说"
+            f"\"不用发了\"即可撤销"
+        )
+        t = threading.Timer(EMERGENCY_ABORT_WINDOW_SEC, self._close_abort_window)
+        t.daemon = True
+        t.start()
+
+    def _close_abort_window(self):
+        """窗口到期。若期间已中止过，_publish_abort 早已收尾，这里是空操作。"""
+        with self._emg_lock:
+            if not self._emergency:
+                return          # 已经因中止而退出，不必重复发
+            self._emergency = False
+        self.get_logger().info("中止窗口到期，退出紧急态")
+        self._listen_pub.publish(String(data="emergency_end"))
 
     def _publish_initiate(self, task: dict):
         payload = json.dumps({
@@ -297,8 +329,9 @@ class BrainNode(Node):
         self._instr_pub.publish(String(data=payload))
         self.get_logger().warn(f"发布中止指令: {payload}")
 
-        # 紧急侧收到中止后也该发 emergency_end，但它未必发得及时（甚至可能挂了）。
-        # 这里主动发一次，免得麦克风一直钉在强制开麦态——重复发是幂等的。
+        # 发起方职责：收到中止信号后关窗。这里 brain_node 自己就是发起方，
+        # 判定成立时同时做两件事——发 abort（语音方）+ 关窗（发起方）。
+        # 关窗是幂等的，_close_abort_window 的定时器到期也是空操作。
         self._listen_pub.publish(String(data="emergency_end"))
 
         self._work_q.put(_SPEAK_PREFIX + _ABORT_CONFIRM)

@@ -141,6 +141,12 @@ EMERGENCY_CHANNEL_BY_EMOTION = {
 EMERGENCY_ASK_WAIT_SEC = 10.0   # 问完到发起之间的等待窗口（秒）
 EMERGENCY_COOLDOWN_SEC = 30.0   # 两次发起的最小间隔（秒）
 
+# 发起之后允许用户反悔的时长。谁发起谁负责开关这个窗口：语音侧发起就由语音侧
+# 发 emergency 开、到点发 emergency_end 关。不能不关——紧急态期间麦克风强制
+# 开着、机械臂的 mute 也被旁路，靠 voice_node 那 180 秒兜底代价太大。
+# 取 60 秒：够老人听完"正在帮你发消息"再改主意，又不至于长时间占着麦克风。
+EMERGENCY_ABORT_WINDOW_SEC = 60.0
+
 # 固定话术（不走大模型：紧急场景要的是确定性，不能让模型临场发挥）
 EMERGENCY_ASK_TEXT = (
     f"{USER_NAME}，你不舒服吗，需要我帮你联系家人或者医生吗"
