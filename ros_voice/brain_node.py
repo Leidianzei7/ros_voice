@@ -240,8 +240,10 @@ class BrainNode(Node):
         # 等窗口到期或被用户决策打断。三种出口：
         #   确认（说"需要"）→ 即刻发起    中止（说"不用"）→ _publish_abort 关窗
         #   超时             → 照常发起
-        deadline = time.time() + EMERGENCY_ABORT_WINDOW_SEC
-        while time.time() < deadline:
+        # 用户一说话就暂停倒计时：大模型仲裁期间不掐表，等结果出来再继续。
+        remaining = EMERGENCY_ABORT_WINDOW_SEC
+        tick = time.time()
+        while remaining > 0:
             with self._emg_lock:
                 if not self._emergency:       # 被 _publish_abort 关掉了
                     self._speak_fixed(EMERGENCY_CANCELLED_TEXT)
@@ -249,7 +251,14 @@ class BrainNode(Node):
             if self._emg_confirm_flag.is_set():
                 self.get_logger().warn("用户确认联络，即刻发起")
                 break
+            # 大模型在判 → 暂停倒计时
+            with self._emg_lock:
+                if self._emg_llm_busy:
+                    tick = time.time()        # 重设起点，不计这段耗时
             self._emg_confirm_flag.wait(timeout=0.2)
+            now = time.time()
+            remaining -= (now - tick)
+            tick = now
 
         # 窗口到期或用户确认 → 发起
         self._close_confirm_window()
