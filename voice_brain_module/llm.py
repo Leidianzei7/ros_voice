@@ -423,8 +423,9 @@ def classify_meta_response(user_text: str) -> str:
 def classify_emergency_abort(user_text: str) -> str:
     """判断紧急呼叫过程中，用户这句话是不是要中止求助。
 
-    只在 emergency.detect_abort_intent 返回 UNKNOWN（规则拿不准）时调用，
-    由 brain_node 放在后台线程里跑，不阻塞 ROS 回调。
+    ⚠️ 已无调用方：确认窗口改用 classify_confirm_intent（三分类）。
+    保留是因为它的取向与确认窗口不同——这里偏向"继续呼叫"，适合
+    "联络已发出、判断要不要撤"的场景，将来若支持中途撤销可直接复用。
 
     返回 emergency.ABORT / emergency.KEEP 二选一（UNKNOWN 一律归到 KEEP）。
 

@@ -119,10 +119,10 @@ TTS / 放歌期间收到 `emergency_confirm`，麦克风**不会立刻开**，�
 | **紧急方** | 紧急呼叫模块 | — | `/emergency/initiate` |
 
 - **发起方**启动 + 授权：开确认窗口 → 等窗口到期 → 若未被中止才发 initiate。中止在联络开始**之前**。
-- **语音方**判决中止：监听 `emergency_confirm` 开窗信号，做规则+大模型两级判定（[emergency.py](voice_brain_module/emergency.py)）
+- **语音方**判决中止：监听 `emergency_confirm` 开窗信号，用户每说一句就交大模型三分类（确认/中止/听不清，见 `llm.classify_confirm_intent`）
 - **紧急方**执行：只收 `/emergency/initiate`，收到就拨号/发短信。不碰 `listen_mode`，也**不需要处理 abort**。
 
-**发起路径**（[brain_node.py](ros_voice/brain_node.py) `_run_emergency_ask`）：稳定负面情绪 → 播报询问 → 即刻发 `emergency_confirm` 开确认窗口 → 等 15 秒 → 未被中止才发 `/emergency/initiate`。和外部发起方的流程完全相同。情绪→渠道映射与话术在 [config.py](voice_brain_module/config.py) 的「紧急联络发起」段。
+**发起路径**（[brain_node.py](ros_voice/brain_node.py) `_run_emergency_ask`）：稳定负面情绪 → 播报询问 → 即刻发 `emergency_confirm` 开确认窗口 → 等 10 秒 → 未被中止才发 `/emergency/initiate`。窗口内用户每说一句都交大模型三分类（确认/中止/听不清），听不清就追问一句继续等；10 秒不含思考与播报耗时，追问也不重置倒计时。情绪→渠道映射与话术在 [config.py](voice_brain_module/config.py) 的「紧急联络发起」段。
 
 ## 目录结构
 
@@ -136,7 +136,7 @@ ros_voice/
 │   ├── wake_word.py        #   唤醒词匹配（中文 + 拼音）
 │   ├── llm.py              #   LLM 调用 + 系统提示词构建
 │   ├── commands.py         #   指令 schema 定义 + 校验
-│   ├── emergency.py        #   紧急呼叫中止意图识别（规则层）
+│   ├── emergency.py        #   紧急联络的判定结果常量 + 中止指令构造
 │   ├── tts.py              #   TTS 语音合成（CosyVoice v2）
 │   ├── pipeline.py         #   ROS 端高层管道接口
 │   ├── context.py          #   感知上下文去抖管道
