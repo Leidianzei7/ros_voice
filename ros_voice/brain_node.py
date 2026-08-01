@@ -47,9 +47,6 @@ from voice_brain_module.player import play_song
 # 队列里的特殊消息前缀：只播一句固定话术，不走 LLM
 _SPEAK_PREFIX = "__SPEAK__:"
 
-# 中止成功后的口头确认。措辞要让老人明确知道"电话没打出去"，
-# 万一是误撤销，他还有机会再喊一次。
-_ABORT_CONFIRM = "好的，已经取消紧急呼叫了。您要是不舒服，随时告诉我。"
 
 
 class BrainNode(Node):
@@ -227,7 +224,9 @@ class BrainNode(Node):
         while remaining > 0:
             with self._emg_lock:
                 if not self._emergency:
-                    self._speak_fixed(EMERGENCY_CANCELLED_TEXT)
+                    # 已被 _publish_abort 中止：窗口早已关闭、取消话术也已排进
+                    # 队列，这里直接退出即可——本函数一返回，工作线程就腾出来
+                    # 播那句话。在这里再播一遍会变成前后两句意思重复的话。
                     return
             if self._emg_confirm_flag.is_set():
                 self.get_logger().warn("用户确认联络，即刻发起")
@@ -302,11 +301,13 @@ class BrainNode(Node):
         self._instr_pub.publish(String(data=payload))
         self.get_logger().warn(f"发布中止指令: {payload}")
 
-        # 发起方职责：收到中止信号后关窗。这里 brain_node 自己就是发起方，
-        # 判定成立时同时做两件事——发 abort（语音方）+ 关窗（发起方）。
-        self._close_confirm_window()
+        # 发起方职责：中止即关窗。⚠️ 必须**直接发**，不能调 _close_confirm_window()
+        # ——上面已经把 _emergency 置 False，那个函数开头的守卫会直接 return，
+        # emergency_confirm_end 就永远发不出去，麦克风要等 180 秒兜底才恢复。
+        self.get_logger().info("中止成功，关闭确认窗口")
+        self._listen_pub.publish(String(data="emergency_confirm_end"))
 
-        self._work_q.put(_SPEAK_PREFIX + _ABORT_CONFIRM)
+        self._work_q.put(_SPEAK_PREFIX + EMERGENCY_CANCELLED_TEXT)
 
     # ── 指令处理 ─────────────────────────────────────────────
 

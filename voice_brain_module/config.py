@@ -144,7 +144,7 @@ EMERGENCY_ASK_TEXT = (
     f"{USER_NAME}，你不舒服吗，需要我帮你联系家人或者医生吗"
 )
 EMERGENCY_CANCELLED_TEXT = "好的，那我就不联系了。您要是不舒服，随时叫我。"
-EMERGENCY_ASK_AGAIN_TEXT = "我没听清，您需要我帮忙联系家人吗"
+EMERGENCY_ASK_AGAIN_TEXT = "我没听清楚，请问是否需要呼叫帮助"
 EMERGENCY_SENT_TEXT = {
     "call": "已帮你拨打紧急联系人的电话",
     "sms":  "已帮你给紧急联系人发消息",
