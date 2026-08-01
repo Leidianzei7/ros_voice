@@ -236,7 +236,6 @@ class BrainNode(Node):
             if self._emg_reask_flag.is_set():
                 self._emg_reask_flag.clear()
                 self._speak_fixed(EMERGENCY_ASK_AGAIN_TEXT)
-                remaining = EMERGENCY_ABORT_WINDOW_SEC
                 tick = time.time()
                 continue
             # 大模型在判 → 暂停倒计时
