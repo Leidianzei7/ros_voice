@@ -22,79 +22,106 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 | `brain_node` | `/voice/command` `/vision/scene_objects` `/vision/emotion_context` `/voice/listen_mode` | `/command` (String, JSON) `/voice/listen_mode` `/voice/speaking` | Qwen LLM 语义理解、视觉/情绪上下文注入、TTS 口语回复、紧急中止意图判定 |
 | `control_node` | `/command` | `/cmd_vel` (Twist) `/arm/grasp_command` (String) `/emergency/abort` (String) | 解析 JSON 指令数组，驱动底盘 + 机械臂 + 转发紧急中止 |
 
-### 麦克风的三个闸
+## 麦克风的开与关
 
-麦克风由**三个互相独立**的条件控制，全开才收音：
+麦克风开不开，由**四个条件**决定，逻辑就一行（[voice_node.py:86](ros_voice/voice_node.py#L86)）：
 
-| 闸 | 谁控制 | 关闭时机 | 放开时机 |
+```python
+想开麦 = 紧急态 or (轮次闸开 and 未硬静音)
+真开麦 = 想开麦 and 未在播报
+```
+
+关闭时**从音频源头截断**——直接排空采集队列，VAD 拿不到数据。不是"录了不用"，是根本不录。
+
+| 条件 | 谁控制 | 关 | 开 |
 |---|---|---|---|
-| 轮次闸 | voice_node 自己 + brain | 识别到指令即自锁 | brain 发 `continuous`/`command` |
-| 硬静音闸 | 外部节点 | 发 `/voice/listen_mode` 的 `mute` | 发 `unmute` |
-| 播报闸 | brain_node | 发 `/voice/speaking` 的 `start` | 发 `end` |
+| 轮次闸 | pipeline 自锁 + brain_node | 识别到一句指令即自锁 | brain 发 `continuous`/`command` |
+| 硬静音 | 外部节点（机械臂/底盘） | 发 `mute` | 发 `unmute`（**只有它能解**） |
+| 播报闸 | brain_node | 发 `/voice/speaking` = `start` | 发 `end` |
+| 紧急旁路 | 紧急呼叫模块 | 发 `emergency_end` | 发 `emergency` |
 
-外加一个凌驾其上的**紧急旁路**：紧急侧发 `emergency` 后，轮次闸与硬静音一律被
-暂时旁路（状态仍记着，`emergency_end` 后原样恢复），麦克风强制开启——紧急呼叫
-期间必须听得见用户说"不用打了"。播报闸不在旁路之列，机器人自己出声时照旧闭麦。
+### 优先级
 
-**播报闸是必需的**：TTS 与放歌都在 brain_node 进程内进行，voice_node 无从感知。
-用户指令那条路本来就靠轮次闸自锁挡住了，但**情绪干预由视觉话题触发、不经过
-voice_node**，没有播报闸机器人就会把自己的声音当成用户指令收回来。
-
-**三闸独立**意味着互不干扰：brain 播报结束只清播报闸，不会解掉机械臂的硬静音；
-外部 `unmute` 也不会在 brain 说到一半时把麦克风打开。
-
-> ⚠️ `/voice/speaking` 的 `start`/`end` 必须成对——brain_node 用 `try/finally`
-> 保证，异常路径也照发。漏发 `end` 即永久静音。
-
-### voice_node 控制话题
-
-`voice_node` 的麦克风行为由**唯一话题** `/voice/listen_mode` 控制，六种模式分属**三个正交维度**：
-
-**维度一 · 轮次模式**（brain_node 每处理完一句发一次，决定"下一句怎么收"）
-
-| msg.data | 唤醒词 | 场景 |
-|----------|--------|------|
-| `"continuous"` | **不需要** | 机器人问了问题，等用户直接回答 |
-| `"command"` | **需要** | 默认状态、对话结束后 |
-
-**维度二 · 硬静音**（外部节点如底盘/机械臂，任意时刻可发）
-
-| msg.data | 行为 |
-|----------|------|
-| `"mute"` | 麦克风彻底关闭，**且此后 continuous/command 一律无法开启** |
-| `"unmute"` | 解除硬静音，按最后一次轮次模式恢复 |
-
-```bash
-# 注意 --once：ros2 topic pub 默认 1 Hz 无限循环，不加会导致 mute 每秒重发，
-# 在别处发的 unmute 一秒内就被压回去。
-ros2 topic pub --once /voice/listen_mode '{data: "mute"}'    # 机械臂抓取/底盘运动前
-ros2 topic pub --once /voice/listen_mode '{data: "unmute"}'  # 动作完成后
+```
+播报闸   ＞   紧急旁路   ＞   硬静音   ＞   轮次闸
+强制闭麦      强制开麦       闭麦        开/关
 ```
 
-**硬静音是粘性的 —— 只有 `unmute` 能解除。** 即使 `mute` 到达时 brain_node 正思考到一半，它随后发回的 `continuous`/`command` 也不会把麦克风打开（但会记下 `wake_required`，`unmute` 后即以该模式恢复）。
+- **播报闸最高**：机器人出声时一律闭麦，紧急态也不例外。TTS 与放歌都在 brain_node 进程内，voice_node 无从感知；尤其情绪干预不经过 voice_node，没有这个信号机器人必然把自己的声音收回来。
+- **紧急旁路次之**：压过硬静音和轮次闸——机械臂抓取途中 `mute` 着，老人摔倒了照样听得见"不用打了"。被旁路的状态原样记着，`emergency_end` 后完整恢复。
+- **硬静音是粘性的**：`continuous`/`command` 打不开它，只有 `unmute` 能解。
 
-> ⚠️ **brain_node 永远不可以发 `mute`。** 一旦发出，用户无法说话，brain_node 也就永远等不到下一条指令去发 `unmute` —— 直接死锁。`mute`/`unmute` 只能由外部节点成对发出。
+> ⚠️ 三对信号都必须**成对发送**：`mute`/`unmute`、`start`/`end`、`emergency`/`emergency_end`。
+> 漏发后一半就是麦克风卡死。brain_node 用 `try/finally` 保证 `end` 必发，外部节点自己负责。
 
-**维度三 · 紧急态**（紧急呼叫模块，拨打紧急电话/发紧急短信期间）
+### 职责边界
 
-| msg.data | 行为 |
-|----------|------|
-| `"emergency"` | 强制开麦 + 免唤醒词，并开始判定用户是否要中止紧急呼叫 |
-| `"emergency_end"` | 退出紧急态，恢复进入前的轮次模式与硬静音状态 |
+`/voice/listen_mode` 有两个订阅者，各自解读、互不通信：
 
-```bash
-ros2 topic pub --once /voice/listen_mode '{data: "emergency"}'      # 开始拨打紧急电话
-ros2 topic pub --once /voice/listen_mode '{data: "emergency_end"}'  # 紧急流程结束
+- **voice_node** —— 只管麦克风开不开、要不要唤醒词。它把听到的话转成文字发到 `/voice/command`，**从不判断这句话是什么意思**。
+- **brain_node** —— 用它决定自己的工作状态：常规对话（大模型 + TTS），还是紧急中止判定。
+
+所以同一句"不用打了"，voice_node 的行为完全一样；是 brain_node 决定送去聊天还是送去中止判定。
+
+| msg.data | 谁能发 | 作用 |
+|---|---|---|
+| `continuous` / `command` | brain_node | 轮次闸开，免/需唤醒词 |
+| `mute` / `unmute` | 外部节点 | 硬静音开关 |
+| `emergency` / `emergency_end` | 紧急呼叫模块 | 紧急态开关（brain_node 中止成功后也补发一次 `emergency_end`） |
+
+未知值按 `command` 处理（fail-open）：宁可多要一次唤醒词，也不把麦克风锁死。
+
+> ⚠️ **brain_node 永远不可以发 `mute`**——静音后用户没法说话，它也就永远等不到下一条指令去发 `unmute`，直接死锁。
+
+### 命名说明：`listen_mode` 是个误称
+
+这个话题名现在名不副实，读代码时容易被误导，记在这里备查。三个轴里**只有紧急态越了界**：
+
+| 轴 | 谁读 | 影响什么 |
+|---|---|---|
+| `continuous` / `command` | voice_node | 怎么**听** |
+| `mute` / `unmute` | voice_node | 怎么**听** |
+| `emergency` / `emergency_end` | voice_node **+ brain_node** | 怎么**听** + 怎么**想** |
+
+前两个轴名副其实；是紧急态这一对值把 brain_node 也拉了进来，话题才从"怎么听"变成了"怎么听 + 怎么想"。
+
+**更合理的做法是拆开**而不是改名：`listen_mode` 只留前两个轴，紧急态另开一个 `/emergency/state`（值 `active`/`inactive`，紧急侧发布，两个节点各自订阅）。紧急态本来就不是"麦克风控制指令"，而是**系统级情境广播**——麦克风只是受影响方之一，brain_node 是另一个，以后可能还有表情屏。改成状态型取值后，紧急侧周期性重发也变得天然合理，顺带能修掉"brain_node 中途重启会漏掉一次性 `emergency`"这个隐患。
+
+**为什么没改**：下游团队已按现有话题名开始对接，改名是破坏性变更。将来若有窗口期，机械臂/底盘不受影响（只用 `mute`/`unmute`，话题名不变），只有紧急侧要改。
+
+### 唤醒词是另一根轴
+
+`wake_required` 决定"收到音之后要不要先说唤醒词"，**和收不收音无关**。默认需要说"小智小智"，`continuous` 免唤醒词，紧急态强制免唤醒词。
+
+紧急期间收到的 `continuous`/`command` **只暂存不生效**，`emergency_end` 后才恢复——否则 brain 每播完一句发的那个 `command` 会让用户第二次喊"不用打了"时还得先报唤醒词。
+
+### 兜底看门狗
+
+| 看门狗 | 阈值 | 触发后 |
+|---|---|---|
+| 麦克风卡死 | 150s | 强制松开轮次闸 + 播报闸，**不碰硬静音** |
+| 紧急态滞留 | 180s | 自动退出紧急态 |
+
+方向相反：前者超时要**放**（brain 崩了不能让整机哑掉），后者要**收**（紧急态是强制开麦，滞留会让麦克风失控）。硬静音永远不兜底——那是外部节点有意为之的无限期静音。
+
+### 已知限制
+
+TTS / 放歌期间收到 `emergency`，麦克风**不会立刻开**，要等播报放完（普通回复几秒，放歌最长 60 秒，`play_song` 阻塞且不支持打断）。播报闸压着紧急旁路是为了防回声，代价就是这个延迟。
+
+## 紧急联络
+
+两条链路，方向相反：
+
+```
+发起：情绪模块 → brain_node ──问一句，等 10 秒──▶ /emergency/initiate → 紧急侧拨号/发短信
+中止：紧急侧 emergency ──▶ brain_node 判定 ──▶ /command ──▶ control_node ──▶ /emergency/abort
 ```
 
-判定成立时 brain_node 会往 `/command` 下发 `{"actuator":"紧急呼叫","action":"中止紧急情况"}`，
-由 control_node 转发到 `/emergency/abort` 供紧急侧挂断电话。判定规则见
-`voice_brain_module/emergency.py`，对外契约见 `接口对接文档.md` §3.4 / §4.4。
+**发起**（[brain_node.py](ros_voice/brain_node.py) `_run_emergency_ask`）：稳定负面情绪触发固定话术询问"×××，你不舒服吗，需要我帮你联系家人或者医生吗"，等 10 秒。用户**明确拒绝**就作罢；**无应答或听不清则照常发起**——老人可能已经说不出话，那正是该联络的时候。渠道按情绪分档，当前 `negative_distress` 与 `low_mood` 都是发短信（`call` 仍是有效取值，留给将来升级）；未纳入映射表的情绪仍走大模型安抚，不联络。两次发起间隔 30 秒冷却。
 
-> **同样必须成对发送**，且漏发 `emergency_end` 比漏发 `unmute` 更糟——麦克风会被钉在
-> 强制开麦态，连 `mute` 都压不住。voice_node 有 180 秒兜底超时，但那是安全网不是流程。
+**中止**（[emergency.py](voice_brain_module/emergency.py)）：规则层离线判定 + 大模型兜底仲裁。取向刻意不对称——求救加强句对取消句有一票否决权，超时/异常/含糊一律"继续呼叫"：漏撤是虚惊一场，误撤可能是人命。
 
-未知值按 `command` 处理（fail-open），宁可多要一次唤醒词，也不把麦克风锁死。
+话术、等待时长、冷却、情绪映射都在 [config.py](voice_brain_module/config.py) 的「紧急呼叫发起」段。称呼 `USER_NAME` 默认 `肖奶奶`，换用户改这一处即可。
 
 ## 目录结构
 
