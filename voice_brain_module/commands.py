@@ -132,6 +132,53 @@ def _resolve_song_options():
 _register_song_command()
 
 
+# ══════════════════════════════════════════
+# 系统级指令（不进 LLM 提示词，由代码在特定事件下直接下发）
+# ══════════════════════════════════════════
+# 走的是与 COMMANDS 完全相同的 /command 话题和三段式格式，但**故意不暴露给大模型**：
+# 它们的触发条件是确定性的代码逻辑（如紧急中止意图判定），交给 LLM 生成只会带来
+# 幻觉风险——聊着天突然冒出一条"中止紧急情况"，紧急呼叫模块无从分辨真假。
+# 因此 build_command_reference() 与 validate_commands() 都只认 COMMANDS：
+# LLM 若擅自输出这类指令，校验必然不通过，会被重试／丢弃。
+SYSTEM_COMMANDS: list = [
+    {
+        "actuator": "紧急呼叫",
+        "action":   "中止紧急情况",
+        "desc":     "用户在紧急呼叫过程中明确表示无需求助，中止正在拨打的紧急电话／发送的紧急短信",
+        "params": {
+            "reason":    {"options": ["user_cancel"], "desc": "中止原因，当前只有用户主动取消一种"},
+            "detector":  {"options": ["rule", "llm"], "desc": "判定来源：关键词规则 / 大模型语义判定"},
+            "utterance": {"desc": "触发判定的用户原话，供紧急侧留档复核"},
+        },
+    },
+]
+
+EMERGENCY_ACTUATOR     = "紧急呼叫"
+EMERGENCY_ABORT_ACTION = "中止紧急情况"
+
+_UTTERANCE_MAX = 100   # 原话截断长度：留档够用，又不至于让指令 JSON 无限长
+
+
+def build_abort_command(utterance: str, detector: str) -> dict:
+    """构造"中止紧急情况"指令。由 brain_node 判定成立后直接调用，不经 LLM。"""
+    return {
+        "actuator": EMERGENCY_ACTUATOR,
+        "action":   EMERGENCY_ABORT_ACTION,
+        "params": {
+            "reason":    "user_cancel",
+            "detector":  detector,
+            "utterance": (utterance or "")[:_UTTERANCE_MAX],
+        },
+    }
+
+
+def is_emergency_abort(cmd: dict) -> bool:
+    """判断一条指令是否为"中止紧急情况"。control_node 用它做优先路由。"""
+    return (isinstance(cmd, dict)
+            and cmd.get("actuator") == EMERGENCY_ACTUATOR
+            and cmd.get("action")   == EMERGENCY_ABORT_ACTION)
+
+
 # ── 指令校验 ──────────────────────────────────────────────────────
 
 _LOOKUP = {(c["actuator"], c["action"]): c["params"] for c in COMMANDS}

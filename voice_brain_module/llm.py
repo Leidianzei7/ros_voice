@@ -402,6 +402,55 @@ def classify_meta_response(user_text: str) -> str:
         return "ADDRESSING"  # 出错时走正常流程
 
 
+def classify_emergency_abort(user_text: str) -> str:
+    """判断紧急呼叫过程中，用户这句话是不是要中止求助。
+
+    只在 emergency.detect_abort_intent 返回 UNKNOWN（规则拿不准）时调用，
+    由 brain_node 放在后台线程里跑，不阻塞 ROS 回调。
+
+    返回 emergency.ABORT / emergency.KEEP 二选一（UNKNOWN 一律归到 KEEP）。
+
+    ⚠️ 判定代价严重不对称，提示词与兜底都必须偏向 KEEP：
+       误撤销一次真实求救可能危及生命，多打一通电话只是虚惊一场。
+    """
+    from .emergency import ABORT, KEEP
+
+    messages = [
+        {"role": "system", "content": (
+            "你是紧急呼叫的意图仲裁器。现在机器人正在为一位老人拨打紧急电话／"
+            "发送紧急求助短信，麦克风收到了老人的一句话。\n"
+            "你要判断：老人是不是要**取消**这次求助。只输出 ABORT 或 KEEP。\n\n"
+
+            "ABORT — 老人明确表示不需要求助、要停下这通电话／短信。例如：\n"
+            "  · \"我没事\"、\"不用打了\"、\"别麻烦人家\"、\"取消吧\"、\"挂了吧\"\n"
+            "  · 说明是误触发：\"我按错了\"、\"不小心碰到的\"、\"虚惊一场\"\n"
+            "  · 语气轻松地否认危险：\"哎呀不至于，我好着呢\"\n\n"
+
+            "KEEP — 其他一切情况。包括：\n"
+            "  · 呼痛、呼救、描述身体不适、催促快点打\n"
+            "  · 在跟旁人说话、自言自语、与求助无关的闲话\n"
+            "  · 听不清、语义零碎、模棱两可\n"
+            "  · 先说没事又说难受这类自相矛盾的表述\n\n"
+
+            "★ 判定代价是不对称的：判错成 ABORT 会撤销一次真实的求救，可能危及生命；"
+            "判错成 KEEP 只是多打一通电话，虚惊一场。\n"
+            "★ 因此：只有老人的取消意图**明白无误**时才输出 ABORT，"
+            "但凡有一点犹豫、含糊、矛盾，一律输出 KEEP。\n"
+            "只输出 ABORT 或 KEEP，不要任何解释。"
+        )},
+        {"role": "user", "content": f"老人说：{user_text}"},
+    ]
+    try:
+        raw = _call_llm_simple(messages).strip().upper()
+        result = ABORT if raw.startswith("ABORT") else KEEP
+        print(f"[紧急中止判定] {result}: {user_text[:80]}", flush=True)
+        return result
+    except Exception as e:
+        # 网络不通时紧急电话多半也打不出去，但绝不能因为调不通就"顺手撤销"
+        print(f"[紧急中止判定] 调用失败，默认 KEEP（继续呼叫）: {e}", file=sys.stderr)
+        return KEEP
+
+
 def _parse_commands(raw: str) -> list[dict]:
     """从 LLM 原始输出中提取 [执行指令] 后的 JSON 数组。"""
     idx = raw.find(_INSTR_PREFIX)

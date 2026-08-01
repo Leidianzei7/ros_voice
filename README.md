@@ -19,8 +19,8 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 | 节点 | 订阅 | 发布 | 功能 |
 |------|------|------|------|
 | `voice_node` | `/voice/listen_mode` `/voice/speaking` | `/voice/command` (String) | 麦克风采音、VAD 切句、SenseVoice ONNX 识别、唤醒词过滤 |
-| `brain_node` | `/voice/command` `/vision/scene_objects` `/vision/emotion_context` | `/command` (String, JSON) `/voice/listen_mode` `/voice/speaking` | Qwen LLM 语义理解、视觉/情绪上下文注入、TTS 口语回复 |
-| `control_node` | `/command` | `/cmd_vel` (Twist) `/arm/grasp_command` (String) | 解析 JSON 指令数组，驱动底盘 + 机械臂 |
+| `brain_node` | `/voice/command` `/vision/scene_objects` `/vision/emotion_context` `/voice/listen_mode` | `/command` (String, JSON) `/voice/listen_mode` `/voice/speaking` | Qwen LLM 语义理解、视觉/情绪上下文注入、TTS 口语回复、紧急中止意图判定 |
+| `control_node` | `/command` | `/cmd_vel` (Twist) `/arm/grasp_command` (String) `/emergency/abort` (String) | 解析 JSON 指令数组，驱动底盘 + 机械臂 + 转发紧急中止 |
 
 ### 麦克风的三个闸
 
@@ -31,6 +31,10 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 | 轮次闸 | voice_node 自己 + brain | 识别到指令即自锁 | brain 发 `continuous`/`command` |
 | 硬静音闸 | 外部节点 | 发 `/voice/listen_mode` 的 `mute` | 发 `unmute` |
 | 播报闸 | brain_node | 发 `/voice/speaking` 的 `start` | 发 `end` |
+
+外加一个凌驾其上的**紧急旁路**：紧急侧发 `emergency` 后，轮次闸与硬静音一律被
+暂时旁路（状态仍记着，`emergency_end` 后原样恢复），麦克风强制开启——紧急呼叫
+期间必须听得见用户说"不用打了"。播报闸不在旁路之列，机器人自己出声时照旧闭麦。
 
 **播报闸是必需的**：TTS 与放歌都在 brain_node 进程内进行，voice_node 无从感知。
 用户指令那条路本来就靠轮次闸自锁挡住了，但**情绪干预由视觉话题触发、不经过
@@ -44,7 +48,7 @@ voice_node**，没有播报闸机器人就会把自己的声音当成用户指�
 
 ### voice_node 控制话题
 
-`voice_node` 的麦克风行为由**唯一话题** `/voice/listen_mode` 控制，四种模式分属**两个正交维度**：
+`voice_node` 的麦克风行为由**唯一话题** `/voice/listen_mode` 控制，六种模式分属**三个正交维度**：
 
 **维度一 · 轮次模式**（brain_node 每处理完一句发一次，决定"下一句怎么收"）
 
@@ -71,6 +75,25 @@ ros2 topic pub --once /voice/listen_mode '{data: "unmute"}'  # 动作完成后
 
 > ⚠️ **brain_node 永远不可以发 `mute`。** 一旦发出，用户无法说话，brain_node 也就永远等不到下一条指令去发 `unmute` —— 直接死锁。`mute`/`unmute` 只能由外部节点成对发出。
 
+**维度三 · 紧急态**（紧急呼叫模块，拨打紧急电话/发紧急短信期间）
+
+| msg.data | 行为 |
+|----------|------|
+| `"emergency"` | 强制开麦 + 免唤醒词，并开始判定用户是否要中止紧急呼叫 |
+| `"emergency_end"` | 退出紧急态，恢复进入前的轮次模式与硬静音状态 |
+
+```bash
+ros2 topic pub --once /voice/listen_mode '{data: "emergency"}'      # 开始拨打紧急电话
+ros2 topic pub --once /voice/listen_mode '{data: "emergency_end"}'  # 紧急流程结束
+```
+
+判定成立时 brain_node 会往 `/command` 下发 `{"actuator":"紧急呼叫","action":"中止紧急情况"}`，
+由 control_node 转发到 `/emergency/abort` 供紧急侧挂断电话。判定规则见
+`voice_brain_module/emergency.py`，对外契约见 `接口对接文档.md` §3.4 / §4.4。
+
+> **同样必须成对发送**，且漏发 `emergency_end` 比漏发 `unmute` 更糟——麦克风会被钉在
+> 强制开麦态，连 `mute` 都压不住。voice_node 有 180 秒兜底超时，但那是安全网不是流程。
+
 未知值按 `command` 处理（fail-open），宁可多要一次唤醒词，也不把麦克风锁死。
 
 ## 目录结构
@@ -85,6 +108,7 @@ ros_voice/
 │   ├── wake_word.py        #   唤醒词匹配（中文 + 拼音）
 │   ├── llm.py              #   LLM 调用 + 系统提示词构建
 │   ├── commands.py         #   指令 schema 定义 + 校验
+│   ├── emergency.py        #   紧急呼叫中止意图识别（规则层）
 │   ├── tts.py              #   TTS 语音合成（CosyVoice v2）
 │   ├── pipeline.py         #   ROS 端高层管道接口
 │   ├── context.py          #   感知上下文去抖管道
@@ -149,6 +173,14 @@ export DASHSCOPE_API_KEY=your_key_here
 | 底盘 | 停止 | 无 |
 | 底盘 | 人体跟踪 | `状态`（开始/停止） |
 | 机械臂 | 抓取 | `target`（苹果/香蕉/瓶子/蛋糕/小黄鸭/绿色药盒/大樱桃） |
+
+**系统级指令**（`SYSTEM_COMMANDS`，由代码直接下发，**不进 LLM 提示词也不过 `validate_commands`**）：
+
+| 执行机构 | 动作 | 参数 | 触发 |
+|----------|------|------|------|
+| 紧急呼叫 | 中止紧急情况 | `reason`、`detector`、`utterance` | 紧急态下判定用户要中止求助 |
+
+> 故意对大模型隐藏：聊天中幻觉出一条"中止紧急情况"，紧急侧无从分辨真假。
 
 ## 安装与运行
 
