@@ -32,11 +32,12 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from voice_brain_module import emergency as emg
+from voice_brain_module.emergency import detect_confirm_intent
 from voice_brain_module.commands import build_abort_command
 from voice_brain_module.config import (
     EMERGENCY_ABORT_WINDOW_SEC, EMERGENCY_ASK_TEXT,
     EMERGENCY_CANCELLED_TEXT, EMERGENCY_CHANNEL_BY_EMOTION,
-    EMERGENCY_COOLDOWN_SEC,
+    EMERGENCY_COOLDOWN_SEC, EMERGENCY_SENT_TEXT,
 )
 from voice_brain_module.context import ContextPipeline
 from voice_brain_module.memory import UserMemory
@@ -77,6 +78,7 @@ class BrainNode(Node):
         self._emergency = False
         self._emg_lock  = threading.Lock()
         self._emg_llm_busy = False   # 同时最多一个后台判定线程在跑
+        self._emg_confirm_flag = threading.Event()  # 确认窗口内用户说"需要"
 
         threading.Thread(target=self._work_loop, daemon=True).start()
         threading.Thread(target=self._prewarm_llm, daemon=True).start()
@@ -163,12 +165,18 @@ class BrainNode(Node):
                 self.get_logger().warn("退出确认态：恢复常规对话")
 
     def _handle_emergency_utterance(self, text: str) -> bool:
-        """紧急态下判定用户是否要中止求助。返回 True 表示这句话已被紧急流程消费。
+        """紧急/确认态下判定用户意图。返回 True 表示已被消费。
 
-        规则层当场出结果（微秒级，离线可用）；只有规则拿不准时才起一个后台线程
-        问 LLM——LLM 调用要一秒上下，绝不能占着 ROS 回调线程，那会连带把
-        /vision/* 和后续语音一起堵住。
+        确认窗口内双向判定：说"需要"即刻发起，说"不用"即刻取消。
+        规则拿不准的交大模型仲裁——LLM 只输出 ABORT 或 CONFIRM，不再有 KEEP。
         """
+        # ── 确认句：用户说"需要"/"对"/"好" → 即刻发起 ──
+        if detect_confirm_intent(text):
+            self.get_logger().warn(f"确认窗口：用户确认联络: {text}")
+            self._emg_confirm_flag.set()
+            return True
+
+        # ── 中止判定：复用现有两级（规则 + 大模型）──
         decision, why = emg.detect_abort_intent(text)
 
         if decision == emg.ABORT:
@@ -177,43 +185,40 @@ class BrainNode(Node):
             return True
 
         if decision == emg.KEEP:
-            self.get_logger().info(f"紧急态：不构成中止（{why}），继续呼叫: {text}")
+            # 求救加强句——继续等待，不中止也不确认
+            self.get_logger().info(f"确认窗口：不构成中止（{why}），继续等待: {text}")
             return True
 
-        # UNKNOWN：交给大模型仲裁
+        # UNKNOWN：交给大模型仲裁。确认窗口内只有 ABORT 和 CONFIRM 两种结果
         with self._emg_lock:
             if self._emg_llm_busy:
-                # 上一句还在判，这句直接放过。判定本身是幂等的（只要有一句判成
-                # ABORT 就撤），排队反而会让结论晚到，不如让下一句重新触发。
-                self.get_logger().info(f"紧急态：判定进行中，跳过本句: {text}")
+                self.get_logger().info(f"确认窗口：判定进行中，跳过本句: {text}")
                 return True
             self._emg_llm_busy = True
 
-        self.get_logger().info(f"紧急态：规则拿不准（{why}），交大模型判定: {text}")
+        self.get_logger().info(f"确认窗口：规则拿不准（{why}），交大模型判定: {text}")
         threading.Thread(target=self._emergency_llm_arbitrate,
                          args=(text,), daemon=True).start()
         return True
 
     def _emergency_llm_arbitrate(self, text: str):
-        """后台线程：LLM 仲裁中止意图。异常一律当 KEEP（继续呼叫）。"""
+        """后台线程：LLM 仲裁。确认窗口内只有 ABORT / CONFIRM，不再有 KEEP。"""
         try:
-            # import 必须在 try 内：llm → config 会在缺 DASHSCOPE_API_KEY 时抛
-            # RuntimeError，放在 try 外会连 finally 一起跳过，_emg_llm_busy 永远
-            # 停在 True——这一整轮紧急流程里后续所有大模型判定都会被静默跳过。
             from voice_brain_module.llm import classify_emergency_abort
             decision = classify_emergency_abort(text)
         except Exception as e:
-            self.get_logger().error(f"紧急中止判定异常，按继续呼叫处理: {e}")
-            decision = emg.KEEP
+            self.get_logger().error(f"紧急判定异常，按确认处理: {e}")
+            decision = emg.CONFIRM
         finally:
             with self._emg_lock:
                 self._emg_llm_busy = False
 
         if decision == emg.ABORT:
-            self.get_logger().warn(f"大模型判定中止紧急呼叫: {text}")
+            self.get_logger().warn(f"大模型判定中止: {text}")
             self._publish_abort(text, emg.DETECTOR_LLM)
         else:
-            self.get_logger().info(f"大模型判定继续呼叫: {text}")
+            self.get_logger().warn(f"大模型判定确认联络: {text}")
+            self._emg_confirm_flag.set()
 
     # ── 紧急联络发起（负面情绪触发）───────────────────────────
 
@@ -229,22 +234,27 @@ class BrainNode(Node):
         最需要联络的情况。
         """
         self._speak_fixed(EMERGENCY_ASK_TEXT)
+        self._emg_confirm_flag.clear()
         self._open_confirm_window()
 
-        # 等窗口到期。用户叫停会通过 _publish_abort 关窗并置 _emergency=False。
-        # 创建一个只用在这里的 Event，窗口到期或中止都唤醒。
-        done = threading.Event()
+        # 等窗口到期或被用户决策打断。三种出口：
+        #   确认（说"需要"）→ 即刻发起    中止（说"不用"）→ _publish_abort 关窗
+        #   超时             → 照常发起
         deadline = time.time() + EMERGENCY_ABORT_WINDOW_SEC
         while time.time() < deadline:
             with self._emg_lock:
                 if not self._emergency:       # 被 _publish_abort 关掉了
                     self._speak_fixed(EMERGENCY_CANCELLED_TEXT)
                     return
-            done.wait(timeout=0.2)
+            if self._emg_confirm_flag.is_set():
+                self.get_logger().warn("用户确认联络，即刻发起")
+                break
+            self._emg_confirm_flag.wait(timeout=0.2)
 
-        # 窗口到期，未被中止
+        # 窗口到期或用户确认 → 发起
         self._close_confirm_window()
         self._publish_initiate(task)
+        self._speak_fixed(EMERGENCY_SENT_TEXT.get(task["channel"], "已发送"))
 
     def _open_confirm_window(self):
         """发布确认信号。voice_node 收到后强制开麦免唤醒词，brain_node 的

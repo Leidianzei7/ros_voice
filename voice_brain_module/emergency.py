@@ -28,8 +28,9 @@
 import re
 
 # 判定结果
-ABORT   = "ABORT"     # 用户明确要中止紧急呼叫
-KEEP    = "KEEP"      # 用户没有要中止，或反而在强化求救 —— 继续呼叫
+ABORT   = "ABORT"     # 用户明确要中止
+CONFIRM = "CONFIRM"   # 用户明确确认（"需要"/"对"/"好"）—— 即刻发起
+KEEP    = "KEEP"      # 用户没有要中止/确认，或反而在强化求救
 UNKNOWN = "UNKNOWN"   # 规则层拿不准，交给 LLM 层
 
 # 判定来源，随指令下发给紧急侧留档
@@ -59,7 +60,7 @@ _ABORT_PHRASE_RE = re.compile("|".join([
     r"虚惊一场", r"不小心碰",
     r"别麻烦", r"不用麻烦", r"不想麻烦", r"甭麻烦",
     r"取消", r"撤销", r"中止", r"挂断", r"挂[了掉]",
-    r"不用发了", r"别发了",          # 紧急场景高频取消句
+    r"不用发了", r"别发了", r"不需要", r"不要了", r"不用[了啦]?",
 ]))
 
 # ── 否定词 + 求助对象 的邻近匹配 ────────────────────────────────
@@ -81,6 +82,30 @@ def _neg_near_call(text: str) -> bool:
             if 0 <= ns - ce <= _NEG_CALL_GAP:      # 对象在前："电话别打了"
                 return True
     return False
+
+
+# ── 确认句：用户主动说要联络 ──────────────────────────────────
+# 只放短小、不会歧义的肯定词。不作为一票否决（它和取消句同时出现时交给上层仲裁）。
+_CONFIRM_RE = re.compile("|".join([
+    r"需要", r"要的?", r"对[啊呀了吧]?", r"嗯+", r"好[啊呀的吧了]?",
+    r"是的?", r"可以", r"行[啊呀了吧]?", r"打[啊呀吧了]?", r"发[啊呀吧了]?",
+    r"联系[啊呀吧了]?", r"叫[啊呀吧了]?",
+]))
+
+
+def detect_confirm_intent(text: str) -> bool:
+    """用户是否在确认需要联络。
+
+    用 fullmatch：只匹配纯肯定词（"好"、"需要"、"嗯"、"对"等），
+    不匹配长句里的碎片——"今天天气不错"里的"不"不会误触发确认。
+    """
+    if not text:
+        return False
+    # 去标点留核心字
+    core = re.sub(r"[^\w一-鿿]", "", text, flags=re.UNICODE)
+    if not core:
+        return False
+    return bool(_CONFIRM_RE.fullmatch(core))
 
 
 def detect_abort_intent(text: str) -> tuple[str, str]:
