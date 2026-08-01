@@ -328,8 +328,7 @@ class VoiceNode(Node):
 
         self._listen_mode["wake_required"] = True    # 强制 command
         self._active.set_emergency(False)
-        restored = "command" if wake_required else "continuous"
-        self.get_logger().warn(f"退出紧急态（{reason}），恢复 {restored} 模式")
+        self.get_logger().warn(f"退出紧急态（{reason}），重置为 command")
         if not self._active.is_set():
             self.get_logger().info("硬静音/播报仍压着，暂不开麦")
 
