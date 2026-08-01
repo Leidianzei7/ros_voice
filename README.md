@@ -110,18 +110,19 @@ TTS / 放歌期间收到 `emergency`，麦克风**不会立刻开**，要等播�
 
 ## 紧急联络
 
-两条链路，方向相反：
+三方协作，各司其职（模型见 `接口对接文档.md` §3.4）：
 
-```
-发起：情绪模块 → brain_node ──问一句，等 10 秒──▶ /emergency/initiate → 紧急侧拨号/发短信
-中止：紧急侧 emergency ──▶ brain_node 判定 ──▶ /command ──▶ control_node ──▶ /emergency/abort
-```
+| 角色 | 当前是谁 | 发 | 收 |
+|------|---------|----|----|
+| **发起方** | brain_node（情绪触发） | `/emergency/initiate`、`listen_mode`=`emergency`/`emergency_end` | `/emergency/abort` |
+| **语音方** | brain_node | `/emergency/abort`（经 control_node 转发） | `listen_mode`=`emergency`/`emergency_end` |
+| **紧急方** | 紧急呼叫模块 | — | `/emergency/initiate`、`/emergency/abort` |
 
-**发起**（[brain_node.py](ros_voice/brain_node.py) `_run_emergency_ask`）：稳定负面情绪触发固定话术询问"×××，你不舒服吗，需要我帮你联系家人或者医生吗"，等 10 秒。用户**明确拒绝**就作罢；**无应答或听不清则照常发起**——老人可能已经说不出话，那正是该联络的时候。渠道按情绪分档，当前 `negative_distress` 与 `low_mood` 都是发短信（`call` 仍是有效取值，留给将来升级）；未纳入映射表的情绪仍走大模型安抚，不联络。两次发起间隔 30 秒冷却。
+- **发起方**启动 + 授权：谁决定该联络，谁就发 initiate 和 `emergency`；发起方自己开关中止窗口——不依赖紧急侧
+- **语音方**判决中止：监听 `emergency` 开窗信号，做规则+大模型两级判定（[emergency.py](voice_brain_module/emergency.py)）
+- **紧急方**执行：只管拨号/发短信/挂断，不碰 `listen_mode`
 
-**中止**（[emergency.py](voice_brain_module/emergency.py)）：规则层离线判定 + 大模型兜底仲裁。取向刻意不对称——求救加强句对取消句有一票否决权，超时/异常/含糊一律"继续呼叫"：漏撤是虚惊一场，误撤可能是人命。
-
-话术、等待时长、冷却、情绪映射都在 [config.py](voice_brain_module/config.py) 的「紧急呼叫发起」段。称呼 `USER_NAME` 默认 `肖奶奶`，换用户改这一处即可。
+**发起路径**（[brain_node.py](ros_voice/brain_node.py) `_run_emergency_ask`）：稳定负面情绪 → 话术询问 → 等 10 秒 → 无人拒绝就发 `/emergency/initiate` + 开 60 秒中止窗口。拒绝则作罢。无应答照发——老人可能已经说不出话。情绪→渠道映射与话术在 [config.py](voice_brain_module/config.py) 的「紧急呼叫发起」段。
 
 ## 目录结构
 
