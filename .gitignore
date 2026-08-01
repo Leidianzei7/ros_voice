@@ -7,6 +7,10 @@ __pycache__/
 onnx_model/
 models/
 
+# 曲库音频（媒体文件不入库，放本地即可；README 说明用法，保留）
+songs/*
+!songs/README.md
+
 # 虚拟环境
 .venv/
 
