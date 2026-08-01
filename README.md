@@ -38,7 +38,7 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 | 轮次闸 | pipeline 自锁 + brain_node | 识别到一句指令即自锁 | brain 发 `continuous`/`command` |
 | 硬静音 | 外部节点（机械臂/底盘） | 发 `mute` | 发 `unmute`（**只有它能解**） |
 | 播报闸 | brain_node | 发 `/voice/speaking` = `start` | 发 `end` |
-| 紧急旁路 | 紧急呼叫模块 | 发 `emergency_end` | 发 `emergency` |
+| 紧急旁路 | 发起方 | 发 `emergency_confirm_end` | 发 `emergency_confirm` |
 
 ### 优先级
 
@@ -48,10 +48,10 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 ```
 
 - **播报闸最高**：机器人出声时一律闭麦，紧急态也不例外。TTS 与放歌都在 brain_node 进程内，voice_node 无从感知；尤其情绪干预不经过 voice_node，没有这个信号机器人必然把自己的声音收回来。
-- **紧急旁路次之**：压过硬静音和轮次闸——机械臂抓取途中 `mute` 着，老人摔倒了照样听得见"不用打了"。被旁路的状态原样记着，`emergency_end` 后完整恢复。
+- **紧急旁路次之**：压过硬静音和轮次闸——机械臂抓取途中 `mute` 着，老人情绪异常时照样听得见"不用发了"。被旁路的状态原样记着，`emergency_confirm_end` 后完整恢复。
 - **硬静音是粘性的**：`continuous`/`command` 打不开它，只有 `unmute` 能解。
 
-> ⚠️ 三对信号都必须**成对发送**：`mute`/`unmute`、`start`/`end`、`emergency`/`emergency_end`。
+> ⚠️ 三对信号都必须**成对发送**：`mute`/`unmute`、`start`/`end`、`emergency_confirm`/`emergency_confirm_end`。
 > 漏发后一半就是麦克风卡死。brain_node 用 `try/finally` 保证 `end` 必发，外部节点自己负责。
 
 ### 职责边界
@@ -67,7 +67,7 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 |---|---|---|
 | `continuous` / `command` | brain_node | 轮次闸开，免/需唤醒词 |
 | `mute` / `unmute` | 外部节点 | 硬静音开关 |
-| `emergency` / `emergency_end` | 紧急呼叫模块 | 紧急态开关（brain_node 中止成功后也补发一次 `emergency_end`） |
+| `emergency_confirm` / `emergency_confirm_end` | 发起方 | 确认窗口开关（brain_node 中止成功后也补发一次 `emergency_confirm_end`） |
 
 未知值按 `command` 处理（fail-open）：宁可多要一次唤醒词，也不把麦克风锁死。
 
@@ -81,11 +81,11 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 |---|---|---|
 | `continuous` / `command` | voice_node | 怎么**听** |
 | `mute` / `unmute` | voice_node | 怎么**听** |
-| `emergency` / `emergency_end` | voice_node **+ brain_node** | 怎么**听** + 怎么**想** |
+| `emergency_confirm` / `emergency_confirm_end` | voice_node **+ brain_node** | 怎么**听** + 怎么**想** |
 
-前两个轴名副其实；是紧急态这一对值把 brain_node 也拉了进来，话题才从"怎么听"变成了"怎么听 + 怎么想"。
+前两个轴名副其实；是确认窗口这一对值把 brain_node 也拉了进来，话题才从"怎么听"变成了"怎么听 + 怎么想"。
 
-**更合理的做法是拆开**而不是改名：`listen_mode` 只留前两个轴，紧急态另开一个 `/emergency/state`（值 `active`/`inactive`，紧急侧发布，两个节点各自订阅）。紧急态本来就不是"麦克风控制指令"，而是**系统级情境广播**——麦克风只是受影响方之一，brain_node 是另一个，以后可能还有表情屏。改成状态型取值后，紧急侧周期性重发也变得天然合理，顺带能修掉"brain_node 中途重启会漏掉一次性 `emergency`"这个隐患。
+**更合理的做法是拆开**而不是改名：`listen_mode` 只留前两个轴，紧急态另开一个 `/emergency/state`（值 `active`/`inactive`，紧急侧发布，两个节点各自订阅）。紧急态本来就不是"麦克风控制指令"，而是**系统级情境广播**——麦克风只是受影响方之一，brain_node 是另一个，以后可能还有表情屏。改成状态型取值后，紧急侧周期性重发也变得天然合理，顺带能修掉"brain_node 中途重启会漏掉一次性 `emergency_confirm`"这个隐患。
 
 **为什么没改**：下游团队已按现有话题名开始对接，改名是破坏性变更。将来若有窗口期，机械臂/底盘不受影响（只用 `mute`/`unmute`，话题名不变），只有紧急侧要改。
 
@@ -93,7 +93,7 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 
 `wake_required` 决定"收到音之后要不要先说唤醒词"，**和收不收音无关**。默认需要说"小智小智"，`continuous` 免唤醒词，紧急态强制免唤醒词。
 
-紧急期间收到的 `continuous`/`command` **只暂存不生效**，`emergency_end` 后才恢复——否则 brain 每播完一句发的那个 `command` 会让用户第二次喊"不用打了"时还得先报唤醒词。
+确认窗期间收到的 `continuous`/`command` **只暂存不生效**，`emergency_confirm_end` 后才恢复——否则 brain 每播完一句发的那个 `command` 会让用户第二次喊"不用发了"时还得先报唤醒词。
 
 ### 兜底看门狗
 
@@ -106,7 +106,7 @@ voice_node  ──/voice/command──▶  brain_node  ──/command──▶  
 
 ### 已知限制
 
-TTS / 放歌期间收到 `emergency`，麦克风**不会立刻开**，要等播报放完（普通回复几秒，放歌最长 60 秒，`play_song` 阻塞且不支持打断）。播报闸压着紧急旁路是为了防回声，代价就是这个延迟。
+TTS / 放歌期间收到 `emergency_confirm`，麦克风**不会立刻开**，要等播报放完（普通回复几秒，放歌最长 60 秒，`play_song` 阻塞且不支持打断）。播报闸压着紧急旁路是为了防回声，代价就是这个延迟。
 
 ## 紧急联络
 
@@ -114,15 +114,15 @@ TTS / 放歌期间收到 `emergency`，麦克风**不会立刻开**，要等播�
 
 | 角色 | 当前是谁 | 发 | 收 |
 |------|---------|----|----|
-| **发起方** | brain_node（情绪触发） | `/emergency/initiate`、`listen_mode`=`emergency`/`emergency_end` | `/emergency/abort` |
-| **语音方** | brain_node | `/emergency/abort`（经 control_node 转发） | `listen_mode`=`emergency`/`emergency_end` |
-| **紧急方** | 紧急呼叫模块 | — | `/emergency/initiate`、`/emergency/abort` |
+| **发起方** | brain_node（情绪触发） | `/emergency/initiate`、`listen_mode`=`emergency_confirm`/`emergency_confirm_end` | `/emergency/abort` |
+| **语音方** | brain_node | `/emergency/abort`（经 control_node 转发） | `listen_mode`=`emergency_confirm`/`emergency_confirm_end` |
+| **紧急方** | 紧急呼叫模块 | — | `/emergency/initiate` |
 
-- **发起方**启动 + 授权：谁决定该联络，谁就发 initiate 和 `emergency`；发起方自己开关中止窗口——不依赖紧急侧
-- **语音方**判决中止：监听 `emergency` 开窗信号，做规则+大模型两级判定（[emergency.py](voice_brain_module/emergency.py)）
-- **紧急方**执行：只管拨号/发短信/挂断，不碰 `listen_mode`
+- **发起方**启动 + 授权：开确认窗口 → 等窗口到期 → 若未被中止才发 initiate。中止在联络开始**之前**。
+- **语音方**判决中止：监听 `emergency_confirm` 开窗信号，做规则+大模型两级判定（[emergency.py](voice_brain_module/emergency.py)）
+- **紧急方**执行：只收 `/emergency/initiate`，收到就拨号/发短信。不碰 `listen_mode`，也**不需要处理 abort**。
 
-**发起路径**（[brain_node.py](ros_voice/brain_node.py) `_run_emergency_ask`）：稳定负面情绪 → 话术询问 → 等 10 秒 → 无人拒绝就发 `/emergency/initiate` + 开 60 秒中止窗口。拒绝则作罢。无应答照发——老人可能已经说不出话。情绪→渠道映射与话术在 [config.py](voice_brain_module/config.py) 的「紧急呼叫发起」段。
+**发起路径**（[brain_node.py](ros_voice/brain_node.py) `_run_emergency_ask`）：稳定负面情绪 → 话术询问 → 等 10 秒 → 无人拒绝就开确认窗口触发中止监听 → 等 60 秒 → 未被中止才发 `/emergency/initiate`。情绪→渠道映射与话术在 [config.py](voice_brain_module/config.py) 的「紧急呼叫发起」段。
 
 ## 目录结构
 

@@ -27,21 +27,21 @@ voice_node: 纯 ROS 层。
     mute       — 麦克风彻底关闭，且此后 continuous/command 一律无法开启
     unmute     — 解除硬静音
 
-  紧急维度（紧急呼叫模块拨打紧急电话/发紧急短信期间发，优先级最高）：
-    emergency     — 强制开麦 + 免唤醒词，压过轮次闸与硬静音
-    emergency_end — 退出紧急态，恢复进入前的轮次模式与硬静音状态
+  紧急确认维度（发起方在联络前开窗确认"用户是否要叫停"，优先级最高）：
+    emergency_confirm     — 强制开麦 + 免唤醒词，压过轮次闸与硬静音
+    emergency_confirm_end — 退出确认态，恢复进入前的轮次模式与硬静音状态
 
 硬静音是"粘性"的：一旦 mute，只有 unmute 能解除。即使 mute 到达时
 brain_node 正思考到一半，它随后发回的 continuous/command 也不会把麦克风打开。
 
-紧急态比硬静音还高一级：机械臂抓取途中老人摔倒，麦克风此刻正被 mute 压着，
-若不允许 emergency 越过它，用户喊"不用打了"根本传不进来。因此 emergency
-期间硬静音只是被**暂时旁路**（状态仍记着），emergency_end 后原样恢复。
-播报闸不在旁路之列——机器人自己说话时照旧闭麦，否则会把自己的声音听回去。
+确认态比硬静音还高一级：机械臂抓取途中老人情绪异常、麦克风正被 mute 压着，
+若不允许 emergency_confirm 越过它，用户喊"不用发了"根本传不进来。因此
+确认期间硬静音只是被**暂时旁路**（状态仍记着），emergency_confirm_end 后
+原样恢复。播报闸不在旁路之列——机器人自己说话时照旧闭麦。
 
-⚠️ brain_node 只能发 continuous/command/emergency_end，永远不可以发 mute ——
-   因为静音后用户无法说话，brain_node 也就永远等不到下一条指令去触发 unmute，
-   直接死锁。
+⚠️ brain_node 只能发 continuous/command/emergency_confirm_end，永远不可以
+   发 mute —— 静音后用户无法说话，brain_node 也就永远等不到下一条指令去
+   触发 unmute，直接死锁。
 """
 import threading
 import time
@@ -224,7 +224,7 @@ class VoiceNode(Node):
                     self.get_logger().error(
                         f"紧急态已持续 {held:.0f}s 超过阈值 "
                         f"{self._EMERGENCY_MAX_SEC:.0f}s，紧急侧可能漏发 "
-                        f"emergency_end——自动退出紧急态"
+                        f"emergency_confirm_end——自动退出确认态"
                     )
                     self._exit_emergency(reason="超时兜底")
 
@@ -253,12 +253,12 @@ class VoiceNode(Node):
         """
         mode = msg.data
 
-        if mode == "emergency":
+        if mode == "emergency_confirm":
             self._enter_emergency()
             return
 
-        if mode == "emergency_end":
-            self._exit_emergency(reason="收到 emergency_end")
+        if mode == "emergency_confirm_end":
+            self._exit_emergency(reason="收到 emergency_confirm_end")
             return
 
         if mode == "mute":

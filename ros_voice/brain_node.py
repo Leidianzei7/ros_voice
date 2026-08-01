@@ -5,9 +5,9 @@ brain_node: 纯 ROS 层。
 订阅 /voice/command          — 用户指令文本。
 订阅 /vision/scene_objects    — 视野内物体(JSON)。
 订阅 /vision/emotion_context  — 用户情绪(JSON)。
-订阅 /voice/listen_mode       — 只关心 emergency/emergency_end，用于跟踪紧急态。
+订阅 /voice/listen_mode       — 只关心 emergency_confirm/emergency_confirm_end，用于跟踪确认态。
 发布 /command                 — JSON 指令数组。
-发布 /voice/listen_mode       — 轮次模式 continuous/command + emergency_end。
+发布 /voice/listen_mode       — 轮次模式 continuous/command + emergency_confirm_end。
 发布 /voice/speaking          — 播报期间闭麦的成对信号 start/end。
 
 TTS 与放歌都在本进程内进行，voice_node 无从感知，因此必须由 brain_node
@@ -145,26 +145,26 @@ class BrainNode(Node):
     # ── 紧急态：中止意图判定 ──────────────────────────────────
 
     def _on_listen_mode(self, msg: String):
-        """只关心 emergency / emergency_end。
+        """只关心 emergency_confirm / emergency_confirm_end。
 
         本节点自己也往这个话题发 continuous/command，ROS 2 默认会把消息投递回
         发布者自身——因此**必须**只认这两个值，否则每轮对话结束时自己发的那句
         command 会把刚进入的紧急态立刻清掉。
         """
-        if msg.data == "emergency":
+        if msg.data == "emergency_confirm":
             with self._emg_lock:
                 already = self._emergency
                 self._emergency = True
             if not already:
-                self.get_logger().warn("进入紧急态：开始监听中止意图")
-        elif msg.data == "emergency_end":
+                self.get_logger().warn("进入确认态：开始监听中止意图")
+        elif msg.data == "emergency_confirm_end":
             with self._emg_lock:
                 was_in = self._emergency
                 self._emergency = False
-            # 中止成功时本节点自己会发一次 emergency_end，绕回来正好命中这里，
+            # 中止成功时本节点自己会发一次 emergency_confirm_end，绕回来正好命中这里，
             # 只在真正发生状态跳变时打日志，免得日志里出现两条"退出紧急态"
             if was_in:
-                self.get_logger().warn("退出紧急态：恢复常规对话")
+                self.get_logger().warn("退出确认态：恢复常规对话")
 
     def _handle_emergency_utterance(self, text: str) -> bool:
         """紧急态下判定用户是否要中止求助。返回 True 表示这句话已被紧急流程消费。
@@ -222,22 +222,19 @@ class BrainNode(Node):
     # ── 紧急联络发起（负面情绪触发）───────────────────────────
 
     def _run_emergency_ask(self, task: dict):
-        """先问一句，等 EMERGENCY_ASK_WAIT_SEC 秒，没被拒绝就发起紧急联络。
+        """先问一句，等 EMERGENCY_ASK_WAIT_SEC 秒，没被拒绝就开确认窗口。
 
-        为什么"没应答"要照发：老人可能已经痛得说不出话或失去意识——那恰恰是最
-        需要联络的情况。只有听到**明确拒绝**才作罢，判定复用 emergency.py 的
-        规则层（"不用"、"我没事"、"别麻烦"）。
+        确认窗口内麦克风强制开着、免唤醒词——用户说的每句话都进中止判定。
+        窗口到期且未被中止，才真正发 /emergency/initiate。
 
-        全程跑在 _work_loop 线程里，等待期用可中断的 Event.wait，用户一拒绝
-        就立刻醒来，不用干等满 10 秒。
+        「为什么无应答照发」：老人可能已经痛得说不出话或失去意识——那恰恰是
+        最需要联络的情况。只有听到**明确拒绝**才作罢。
         """
         channel = task["channel"]
         self._emg_cancel.clear()
         with self._emg_lock:
             self._emg_pending = True
         try:
-            # 这句是问句，_check_question_mode 会据此发 continuous，
-            # 于是等待期内麦克风开着且免唤醒词，用户能直接答话
             self._speak_fixed(EMERGENCY_ASK_TEXT)
             declined = self._emg_cancel.wait(EMERGENCY_ASK_WAIT_SEC)
         finally:
@@ -245,47 +242,43 @@ class BrainNode(Node):
                 self._emg_pending = False
 
         if declined:
-            # 注意：**不退还冷却**。用户既然说了不用，就该安静一段时间，
-            # 退还会让下一帧负面情绪立刻又问一遍，变成反复骚扰。
             self.get_logger().warn("用户明确拒绝，取消本次紧急联络")
             self._speak_fixed(EMERGENCY_CANCELLED_TEXT)
             return
 
-        # 先发起再播报：紧急侧可以立刻开始拨号，机器人那句"正在帮你拨打"
-        # 与拨号并行发生，省下一整句 TTS 的时间（2~3 秒）
-        self._publish_initiate(task)
-        self._open_abort_window()
+        # 开确认窗口 → 播告知话术 → 等窗口到期。用户此间说"不用发了"即中止。
+        # 窗口到期时若仍处于紧急态 = 用户没叫停 → 正式发起联络。
+        self._open_confirm_window()
         self._speak_fixed(EMERGENCY_GOING_TEXT.get(channel, EMERGENCY_GOING_TEXT["call"]))
+        self._emg_cancel.wait(EMERGENCY_ABORT_WINDOW_SEC)
 
-    def _open_abort_window(self):
-        """开启中止监听窗口，并安排到点自动关闭。
+        with self._emg_lock:
+            still_active = self._emergency
+        if still_active:
+            self._close_confirm_window()
+            self._publish_initiate(task)
 
-        **谁发起谁负责开关**：这次联络是语音侧发起的，语音侧就该自己声明
-        "允许用户反悔"，而不是指望紧急侧替它发 —— 紧急侧只管拨号/发短信，
-        它不知道这一次该不该允许中止。紧急侧自行发起的呼叫同理，由它自己发。
+    def _open_confirm_window(self):
+        """发布确认信号。voice_node 收到后强制开麦免唤醒词，brain_node 的
+        _on_listen_mode 回调也把本节点切成中止判定状态。
 
-        必须安排关闭：用户一直没喊停的话没人来关，紧急态期间麦克风强制开着、
-        机械臂的 mute 也被旁路，只靠 voice_node 那 180 秒兜底代价太大。
+        不设定时器——调用方负责到时关窗。当前调用方 _run_emergency_ask 在
+        窗口到期后调用 _close_confirm_window；将来其他发起方开窗时同理。
         """
         with self._emg_lock:
             self._emergency = True
-        self._listen_pub.publish(String(data="emergency"))
+        self._listen_pub.publish(String(data="emergency_confirm"))
         self.get_logger().warn(
-            f"开启中止窗口 {EMERGENCY_ABORT_WINDOW_SEC:.0f}s：用户此间说"
-            f"\"不用发了\"即可撤销"
-        )
-        t = threading.Timer(EMERGENCY_ABORT_WINDOW_SEC, self._close_abort_window)
-        t.daemon = True
-        t.start()
+            f"开启确认窗口 {EMERGENCY_ABORT_WINDOW_SEC:.0f}s")
 
-    def _close_abort_window(self):
+    def _close_confirm_window(self):
         """窗口到期。若期间已中止过，_publish_abort 早已收尾，这里是空操作。"""
         with self._emg_lock:
             if not self._emergency:
-                return          # 已经因中止而退出，不必重复发
+                return          # 已经中止过，不必重复发
             self._emergency = False
-        self.get_logger().info("中止窗口到期，退出紧急态")
-        self._listen_pub.publish(String(data="emergency_end"))
+        self.get_logger().info("确认窗口到期，联络照常发起")
+        self._listen_pub.publish(String(data="emergency_confirm_end"))
 
     def _publish_initiate(self, task: dict):
         payload = json.dumps({
@@ -331,8 +324,7 @@ class BrainNode(Node):
 
         # 发起方职责：收到中止信号后关窗。这里 brain_node 自己就是发起方，
         # 判定成立时同时做两件事——发 abort（语音方）+ 关窗（发起方）。
-        # 关窗是幂等的，_close_abort_window 的定时器到期也是空操作。
-        self._listen_pub.publish(String(data="emergency_end"))
+        self._close_confirm_window()
 
         self._work_q.put(_SPEAK_PREFIX + _ABORT_CONFIRM)
 
