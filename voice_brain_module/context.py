@@ -57,11 +57,13 @@ class ContextPipeline:
         """摄入一帧物体检测结果。"""
         self._push(self._scene_window, data)
 
-    def feed_emotion(self, data: dict) -> str | None:
+    def feed_emotion(self, data: dict) -> dict | None:
         """
         摄入一帧情绪检测结果。
-        若稳定情绪需要干预且冷却已过，返回情绪中文名；
-        否则返回 None。
+        若稳定情绪需要干预且冷却已过，返回该稳定情绪的完整字典；否则返回 None。
+
+        返回整个字典而非只返回中文名，是因为调用方需要 `emotion`（英文标识）
+        来决定联络方式——痛苦要打电话，仅仅情绪低落发条短信就够了。
         """
         self._push(self._emotion_window, data)
         stable = self._stable_emotion()
@@ -75,7 +77,7 @@ class ContextPipeline:
             # None，不会重复入队。若干预最终没送达，由 cancel_intervention 退还。
             self._prev_intervention_time = self._last_intervention_time
             self._last_intervention_time = now
-        return stable.get("emotion_zh", "情绪不佳")
+        return stable
 
     def cancel_intervention(self):
         """干预未实际送达（排队过久被丢弃），退还冷却。

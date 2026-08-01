@@ -33,6 +33,10 @@ from std_msgs.msg import String
 
 from voice_brain_module import emergency as emg
 from voice_brain_module.commands import build_abort_command
+from voice_brain_module.config import (
+    EMERGENCY_ASK_TEXT, EMERGENCY_ASK_WAIT_SEC, EMERGENCY_CANCELLED_TEXT,
+    EMERGENCY_CHANNEL_BY_EMOTION, EMERGENCY_COOLDOWN_SEC, EMERGENCY_GOING_TEXT,
+)
 from voice_brain_module.context import ContextPipeline
 from voice_brain_module.memory import UserMemory
 from voice_brain_module.pipeline import process_command
@@ -52,6 +56,7 @@ class BrainNode(Node):
         self._instr_pub    = self.create_publisher(String, "/command", 10)
         self._listen_pub   = self.create_publisher(String, "/voice/listen_mode", 10)
         self._speaking_pub = self.create_publisher(String, "/voice/speaking", 10)
+        self._initiate_pub = self.create_publisher(String, "/emergency/initiate", 10)
         self.create_subscription(String, "/voice/command", self._on_command, 10)
         self.create_subscription(String, "/vision/scene_objects",
                                  self._on_scene_objects, 10)
@@ -60,7 +65,8 @@ class BrainNode(Node):
         self.create_subscription(String, "/voice/listen_mode",
                                  self._on_listen_mode, 10)
 
-        self._ctx   = ContextPipeline(window_sec=3.0)
+        self._ctx   = ContextPipeline(window_sec=3.0,
+                                      intervention_cooldown=EMERGENCY_COOLDOWN_SEC)
         self._mem   = UserMemory()
         self._last_question = ""   # 机器人上一轮问用户的问题
         self._pending_songs = []   # 待播歌曲，TTS 说完后由 _play_pending_songs 消费
@@ -70,6 +76,10 @@ class BrainNode(Node):
         self._emergency = False
         self._emg_lock  = threading.Lock()
         self._emg_llm_busy = False   # 同时最多一个后台判定线程在跑
+
+        # 紧急联络询问窗口："需要我帮你联系家人吗" 问出去之后的等待期
+        self._emg_pending = False
+        self._emg_cancel  = threading.Event()   # 用户明确拒绝时置位，提前唤醒等待
 
         threading.Thread(target=self._work_loop, daemon=True).start()
         threading.Thread(target=self._prewarm_llm, daemon=True).start()
@@ -105,8 +115,27 @@ class BrainNode(Node):
         except json.JSONDecodeError:
             self.get_logger().warn("emotion_context JSON 解析失败")
             return
-        emotion_zh = self._ctx.feed_emotion(data)
-        if emotion_zh:
+        stable = self._ctx.feed_emotion(data)
+        if not stable:
+            return
+
+        emotion    = stable.get("emotion", "")
+        emotion_zh = stable.get("emotion_zh", "情绪不佳")
+        channel    = EMERGENCY_CHANNEL_BY_EMOTION.get(emotion)
+
+        if channel:
+            # 映射表里的情绪 → 走紧急联络流程（先问，再决定打电话/发短信）
+            self.get_logger().warn(
+                f"触发紧急联络询问: {emotion_zh}({emotion}) → {channel}"
+            )
+            self._work_q.put({
+                "type":       "emergency_ask",
+                "channel":    channel,
+                "emotion":    emotion,
+                "emotion_zh": emotion_zh,
+            })
+        else:
+            # 未纳入映射表的情绪 → 保持原来的大模型安抚，不联系家属
             self.get_logger().warn(f"触发情绪干预: {emotion_zh}")
             self._work_q.put(
                 f"__EMOTION_INTERVENTION__:{emotion_zh}:{time.time()}"
@@ -189,6 +218,69 @@ class BrainNode(Node):
         else:
             self.get_logger().info(f"大模型判定继续呼叫: {text}")
 
+    # ── 紧急联络发起（负面情绪触发）───────────────────────────
+
+    def _run_emergency_ask(self, task: dict):
+        """先问一句，等 EMERGENCY_ASK_WAIT_SEC 秒，没被拒绝就发起紧急联络。
+
+        为什么"没应答"要照发：老人可能已经痛得说不出话或失去意识——那恰恰是最
+        需要联络的情况。只有听到**明确拒绝**才作罢，判定复用 emergency.py 的
+        规则层（"不用"、"我没事"、"别麻烦"）。
+
+        全程跑在 _work_loop 线程里，等待期用可中断的 Event.wait，用户一拒绝
+        就立刻醒来，不用干等满 10 秒。
+        """
+        channel = task["channel"]
+        self._emg_cancel.clear()
+        with self._emg_lock:
+            self._emg_pending = True
+        try:
+            # 这句是问句，_check_question_mode 会据此发 continuous，
+            # 于是等待期内麦克风开着且免唤醒词，用户能直接答话
+            self._speak_fixed(EMERGENCY_ASK_TEXT)
+            declined = self._emg_cancel.wait(EMERGENCY_ASK_WAIT_SEC)
+        finally:
+            with self._emg_lock:
+                self._emg_pending = False
+
+        if declined:
+            # 注意：**不退还冷却**。用户既然说了不用，就该安静一段时间，
+            # 退还会让下一帧负面情绪立刻又问一遍，变成反复骚扰。
+            self.get_logger().warn("用户明确拒绝，取消本次紧急联络")
+            self._speak_fixed(EMERGENCY_CANCELLED_TEXT)
+            return
+
+        # 先发起再播报：紧急侧可以立刻开始拨号，机器人那句"正在帮你拨打"
+        # 与拨号并行发生，省下一整句 TTS 的时间（2~3 秒）
+        self._publish_initiate(task)
+        self._speak_fixed(EMERGENCY_GOING_TEXT.get(channel, EMERGENCY_GOING_TEXT["call"]))
+
+    def _publish_initiate(self, task: dict):
+        payload = json.dumps({
+            "event":      "emergency_initiate",
+            "channel":    task["channel"],          # call = 打电话；sms = 发短信
+            "reason":     "negative_emotion",
+            "emotion":    task["emotion"],
+            "emotion_zh": task["emotion_zh"],
+            "stamp_sec":  time.time(),
+        }, ensure_ascii=False)
+        self.get_logger().warn(f"发起紧急联络: {payload}")
+        self._initiate_pub.publish(String(data=payload))
+
+    def _handle_ask_response(self, text: str) -> None:
+        """询问窗口内收到的用户语音：只判断是不是明确拒绝。"""
+        decision, why = emg.detect_abort_intent(text)
+        if decision == emg.ABORT:
+            self.get_logger().warn(f"判定为拒绝（{why}）: {text}")
+            self._emg_cancel.set()
+            return
+
+        # 不是拒绝就继续等。这里必须再发一次 continuous：pipeline 每识别一句都会
+        # 自锁轮次闸，不重新放开的话，用户说的第一句话之后麦克风就关了，
+        # 后面再想说"不用"也传不进来。
+        self.get_logger().info(f"询问期间收到（{why}），不构成拒绝: {text}")
+        self._listen_pub.publish(String(data="continuous"))
+
     def _publish_abort(self, utterance: str, detector: str):
         """下发"中止紧急情况"，并收尾紧急态。
 
@@ -219,8 +311,14 @@ class BrainNode(Node):
         # 既抢扬声器也抢麦克风。
         with self._emg_lock:
             in_emergency = self._emergency
+            ask_pending  = self._emg_pending
         if in_emergency:
             self._handle_emergency_utterance(msg.data)
+            return
+        # 询问窗口内：只判断是不是拒绝，不进队列（否则会被大模型当普通对话回复，
+        # 用户说的"不用"就白说了）
+        if ask_pending:
+            self._handle_ask_response(msg.data)
             return
 
         self._work_q.put(msg.data)
@@ -264,8 +362,19 @@ class BrainNode(Node):
         _INTERVENTION_TTL = 3.0   # 干预消息在队列中最长存活时间（秒）
 
         while True:
-            cmd = self._work_q.get()
+            item = self._work_q.get()
 
+            # 结构化任务（紧急联络询问）用 dict，避免把字段拼进字符串再切开——
+            # emotion_zh 来自外部 JSON，含冒号就会把解析切错
+            if isinstance(item, dict):
+                if item.get("type") == "emergency_ask":
+                    try:
+                        self._run_emergency_ask(item)
+                    except Exception as e:
+                        self.get_logger().error(f"紧急联络询问失败: {e}")
+                continue
+
+            cmd = item
             if cmd.startswith(_SPEAK_PREFIX):
                 self._speak_fixed(cmd[len(_SPEAK_PREFIX):])
                 continue
@@ -354,7 +463,10 @@ class BrainNode(Node):
             self.get_logger().error(f"播报失败: {e}")
         finally:
             self._speaking_pub.publish(String(data="end"))
-            self._check_question_mode("")
+            # 把话术原文交给 _check_question_mode：紧急联络的询问句以"吗"结尾，
+            # 它会据此发 continuous，让接下来的等待期免唤醒词直接收音。
+            # 陈述句（如中止确认）走 command 分支，与原行为一致。
+            self._check_question_mode(text)
 
     def _check_question_mode(self, spoken: str):
         """如果口语回复中包含问句，通知 voice_node 进入持续监听模式。
