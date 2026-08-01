@@ -37,7 +37,7 @@ from voice_brain_module.config import (
     EMERGENCY_ABORT_WINDOW_SEC, EMERGENCY_ASK_AGAIN_TEXT,
     EMERGENCY_ASK_TEXT, EMERGENCY_CANCELLED_TEXT,
     EMERGENCY_CHANNEL_BY_EMOTION, EMERGENCY_COOLDOWN_SEC,
-    EMERGENCY_SENT_TEXT,
+    EMERGENCY_SENT_TEXT, EMERGENCY_TIMEOUT_SENT_TEXT,
 )
 from voice_brain_module.context import ContextPipeline
 from voice_brain_module.memory import UserMemory
@@ -222,6 +222,7 @@ class BrainNode(Node):
 
         remaining = EMERGENCY_ABORT_WINDOW_SEC
         tick = time.time()
+        confirmed = False        # True=用户点头，False=一直没等到明确答复
         while remaining > 0:
             with self._emg_lock:
                 if not self._emergency:
@@ -231,6 +232,7 @@ class BrainNode(Node):
                     return
             if self._emg_confirm_flag.is_set():
                 self.get_logger().warn("用户确认联络，即刻发起")
+                confirmed = True
                 break
             # 大模型要求追问 → 播追问话术，重置窗口继续等
             if self._emg_reask_flag.is_set():
@@ -249,10 +251,15 @@ class BrainNode(Node):
                 remaining -= (now - tick)
             tick = now
 
-        # 窗口到期或用户确认 → 发起
+        # 窗口到期或用户确认 → 发起。两种情形的话术要分开：用户点了头就正常
+        # 告知；一直没等到明确答复则点破"您貌似不方便回复"，不能说得像他答应过。
         self._close_confirm_window()
         self._publish_initiate(task)
-        self._speak_fixed(EMERGENCY_SENT_TEXT.get(task["channel"], "已发送"))
+        if confirmed:
+            self._speak_fixed(EMERGENCY_SENT_TEXT.get(task["channel"], "已发送"))
+        else:
+            self.get_logger().warn("窗口内未得到明确答复，按不便回复处理")
+            self._speak_fixed(EMERGENCY_TIMEOUT_SENT_TEXT)
 
     def _open_confirm_window(self):
         """发布确认信号。voice_node 收到后强制开麦免唤醒词，brain_node 的
