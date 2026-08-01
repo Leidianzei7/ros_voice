@@ -76,7 +76,8 @@ class BrainNode(Node):
         self._emg_lock  = threading.Lock()
         self._emg_llm_busy = False   # 同时最多一个后台判定线程在跑
         self._emg_confirm_flag = threading.Event()  # 确认窗口内用户说"需要"
-        self._emg_reask_flag  = threading.Event()   # LLM 要求追问
+        self._emg_reask_flag  = threading.Event()   # 判定为听不清，需要追问
+        self._emg_pending_text = None               # 判定期间又说的话，判完接着判
 
         threading.Thread(target=self._work_loop, daemon=True).start()
         threading.Thread(target=self._prewarm_llm, daemon=True).start()
@@ -163,43 +164,63 @@ class BrainNode(Node):
                 self.get_logger().warn("退出确认态：恢复常规对话")
 
     def _handle_emergency_utterance(self, text: str) -> bool:
-        """确认窗口内所有用户语音全交大模型判定。返回 True 表示已被消费。
+        """确认窗口内的用户语音。返回 True 表示已被消费。
 
-        大模型三分类：CONFIRM → 即刻发起 / ABORT → 即刻取消 /
-        ASK_AGAIN → 追问一句继续等。
+        三分类：CONFIRM → 即刻发起 / ABORT → 即刻取消 / ASK_AGAIN → 追问。
         """
         with self._emg_lock:
             if self._emg_llm_busy:
-                self.get_logger().info(f"确认窗口：判定进行中，跳过本句: {text}")
+                # 上一句还在判——**不能丢**。老人常常先"哎呀"一声再说"不用了"，
+                # 丢掉的往往正是那句明确表态。这里暂存，判完接着判；后到的覆盖
+                # 先到的，因为最新一句最能代表他现在的意思。
+                self._emg_pending_text = text
+                self.get_logger().info(f"判定进行中，暂存本句: {text}")
                 return True
             self._emg_llm_busy = True
 
-        self.get_logger().info(f"确认窗口：交大模型判定: {text}")
+        self.get_logger().info(f"确认窗口收到: {text}")
         threading.Thread(target=self._emergency_llm_arbitrate,
                          args=(text,), daemon=True).start()
         return True
 
     def _emergency_llm_arbitrate(self, text: str):
-        """后台线程：大模型三分类。ASK_AGAIN → 追问一句继续等。"""
-        try:
-            from voice_brain_module.llm import classify_confirm_intent
-            decision = classify_confirm_intent(text)
-        except Exception as e:
-            self.get_logger().error(f"确认判定异常，追问: {e}")
-            decision = "ASK_AGAIN"
-        finally:
-            with self._emg_lock:
-                self._emg_llm_busy = False
+        """后台线程：三分类判定。判定期间用户又说了话就接着判最新那句。"""
+        while True:
+            try:
+                from voice_brain_module.llm import classify_confirm_intent
+                decision = classify_confirm_intent(text)
+            except Exception as e:
+                self.get_logger().error(f"判定异常，按听不清处理: {e}")
+                decision = "ASK_AGAIN"
 
-        if decision == emg.ABORT:
-            self.get_logger().warn(f"大模型判定中止: {text}")
-            self._publish_abort(text, emg.DETECTOR_LLM)
-        elif decision == emg.CONFIRM:
-            self.get_logger().warn(f"大模型判定确认: {text}")
-            self._emg_confirm_flag.set()
-        else:
-            self.get_logger().info(f"大模型要求追问: {text}")
-            self._emg_reask_flag.set()
+            if decision == emg.ABORT:
+                self.get_logger().warn(f"判定中止: {text}")
+                self._publish_abort(text, emg.DETECTOR_LLM)
+                decided = True
+            elif decision == emg.CONFIRM:
+                self.get_logger().warn(f"判定确认: {text}")
+                self._emg_confirm_flag.set()
+                decided = True
+            else:
+                decided = False
+
+            with self._emg_lock:
+                # 已经定了就不必再看暂存的话；没定才接着判最新那句
+                nxt = None if decided else self._emg_pending_text
+                self._emg_pending_text = None
+                if nxt is None:
+                    self._emg_llm_busy = False
+
+            if nxt is None:
+                if not decided:
+                    # 没有更新的话可判，才追问——否则用户刚说了新的一句，
+                    # 还回他一句"我没听清楚"会显得答非所问
+                    self.get_logger().info(f"听不清，追问: {text}")
+                    self._emg_reask_flag.set()
+                return
+
+            self.get_logger().info(f"判定期间又说了话，改判最新一句: {nxt}")
+            text = nxt
 
     # ── 紧急联络发起（负面情绪触发）───────────────────────────
 
@@ -217,6 +238,8 @@ class BrainNode(Node):
         self._speak_fixed(EMERGENCY_ASK_TEXT)
         self._emg_confirm_flag.clear()
         self._emg_reask_flag.clear()
+        with self._emg_lock:
+            self._emg_pending_text = None   # 上一轮的残留不能漏进这一轮
         self._open_confirm_window()
 
         remaining = EMERGENCY_ABORT_WINDOW_SEC
