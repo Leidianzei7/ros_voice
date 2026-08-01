@@ -237,13 +237,15 @@ class BrainNode(Node):
                 self._speak_fixed(EMERGENCY_ASK_AGAIN_TEXT)
                 tick = time.time()
                 continue
-            # 大模型在判 → 暂停倒计时
+            # 大模型在判 → 这一轮不计时。必须在 wait 之前取 busy、在 wait 之后
+            # 才决定扣不扣：若像之前那样只在 wait 前重置 tick，wait 的 0.2 秒
+            # 照样会被 now - tick 算进去，等于没暂停。
             with self._emg_lock:
-                if self._emg_llm_busy:
-                    tick = time.time()
+                busy = self._emg_llm_busy
             self._emg_confirm_flag.wait(timeout=0.2)
             now = time.time()
-            remaining -= (now - tick)
+            if not busy:
+                remaining -= (now - tick)
             tick = now
 
         # 窗口到期或用户确认 → 发起
