@@ -469,6 +469,53 @@ def classify_emergency_abort(user_text: str) -> str:
         return KEEP
 
 
+def classify_confirm_intent(user_text: str) -> str:
+    """确认窗口内判断用户意图：要联系 / 不要联系 / 听不懂。
+
+    返回 emergency.ABORT / emergency.CONFIRM / 字符串 ASK_AGAIN。
+    """
+    from .emergency import ABORT, CONFIRM
+
+    prompt = (
+        "一个陪护机器人刚问了老人需不需要帮忙联系家人或者医生，"
+        "现在老人说了一句话。你要判断老人的意图。\n\n"
+        "只输出以下三个词之一：\n\n"
+        "CONFIRM - 老人明确表示需要联系。包括：\n"
+        "  . 需要 对 好 嗯 可以 行 是的\n"
+        "  . 快打 赶紧联系 叫他过来\n"
+        "  . 表述不适且未拒绝：我难受 胸口疼 - 说难受本身就是同意\n\n"
+        "ABORT - 老人明确表示不需要。包括：\n"
+        "  . 不用 不需要 不要 没事 我没事\n"
+        "  . 别打 别联系 取消 算了\n"
+        "  . 语气轻松否认：我好着呢 不至于\n\n"
+        "ASK_AGAIN - 听不清 听不懂 语言混乱 模棱两可。例如：\n"
+        "  . 自言自语碎片 跟旁人说话\n"
+        "  . 句子不完整 无法判断意图\n"
+        "  . 既有肯定又有否定的矛盾表述\n"
+        "  . 说了话但和要不要联系家人完全无关\n\n"
+        "只有意图明确时才输出 CONFIRM 或 ABORT，"
+        "拿不准就输出 ASK_AGAIN - 机器人会再问一遍。\n"
+        "只输出 CONFIRM ABORT 或 ASK_AGAIN，不要任何解释。"
+    )
+    messages = [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": f"老人说：{user_text}"},
+    ]
+    try:
+        raw = _call_llm_simple(messages).strip().upper()
+        if "ABORT" in raw:
+            result = ABORT
+        elif "CONFIRM" in raw:
+            result = CONFIRM
+        else:
+            result = "ASK_AGAIN"
+        print(f"[确认判定] {result}: {user_text[:80]}", flush=True)
+        return result
+    except Exception as e:
+        print(f"[确认判定] 调用失败，默认 ASK_AGAIN: {e}", file=sys.stderr)
+        return "ASK_AGAIN"
+
+
 def _parse_commands(raw: str) -> list[dict]:
     """从 LLM 原始输出中提取 [执行指令] 后的 JSON 数组。"""
     idx = raw.find(_INSTR_PREFIX)
