@@ -315,14 +315,18 @@ class VoiceNode(Node):
         self.get_logger().warn(f"进入紧急态：强制开麦 + 免唤醒词{muted}")
 
     def _exit_emergency(self, reason: str):
-        """退出紧急态，恢复进入前的轮次模式与硬静音状态。"""
+        """退出紧急态，直接重置为 command（需要唤醒词）。
+
+        不恢复进入前的模式：紧急态通常由确认窗口触发，进入前多半是 continuous
+        （因为询问话术以"吗"结尾），恢复后会变成免唤醒词——相当于机器人刚打完
+        紧急电话，接下来任何一句话都会被当成指令。重置为 command 最安全。
+        """
         with self._emg_lock:
             if not self._emergency:
                 return          # 未进入过/已退出，幂等
             self._emergency = False
-            wake_required = self._saved_wake_required
 
-        self._listen_mode["wake_required"] = wake_required
+        self._listen_mode["wake_required"] = True    # 强制 command
         self._active.set_emergency(False)
         restored = "command" if wake_required else "continuous"
         self.get_logger().warn(f"退出紧急态（{reason}），恢复 {restored} 模式")
