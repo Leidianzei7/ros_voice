@@ -136,7 +136,7 @@ EMERGENCY_CHANNEL_BY_EMOTION = {
     "low_mood":          "sms",
 }
 
-EMERGENCY_ABORT_WINDOW_SEC = 15.0   # 播报后等待叫停的时长（秒）
+EMERGENCY_ABORT_WINDOW_SEC = 10.0   # 播报后等待叫停的时长（秒）
 EMERGENCY_COOLDOWN_SEC     = 30.0   # 两次发起的最小间隔（秒）
 
 # 固定话术（不走大模型：紧急场景要的是确定性）
