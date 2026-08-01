@@ -122,7 +122,7 @@ TTS / 放歌期间收到 `emergency_confirm`，麦克风**不会立刻开**，�
 - **语音方**判决中止：监听 `emergency_confirm` 开窗信号，做规则+大模型两级判定（[emergency.py](voice_brain_module/emergency.py)）
 - **紧急方**执行：只收 `/emergency/initiate`，收到就拨号/发短信。不碰 `listen_mode`，也**不需要处理 abort**。
 
-**发起路径**（[brain_node.py](ros_voice/brain_node.py) `_run_emergency_ask`）：稳定负面情绪 → 话术询问 → 等 10 秒 → 无人拒绝就开确认窗口触发中止监听 → 等 60 秒 → 未被中止才发 `/emergency/initiate`。情绪→渠道映射与话术在 [config.py](voice_brain_module/config.py) 的「紧急呼叫发起」段。
+**发起路径**（[brain_node.py](ros_voice/brain_node.py) `_run_emergency_ask`）：稳定负面情绪 → 播报询问 → 即刻发 `emergency_confirm` 开确认窗口 → 等 15 秒 → 未被中止才发 `/emergency/initiate`。和外部发起方的流程完全相同。情绪→渠道映射与话术在 [config.py](voice_brain_module/config.py) 的「紧急联络发起」段。
 
 ## 目录结构
 

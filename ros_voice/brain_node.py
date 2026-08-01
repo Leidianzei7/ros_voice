@@ -34,9 +34,9 @@ from std_msgs.msg import String
 from voice_brain_module import emergency as emg
 from voice_brain_module.commands import build_abort_command
 from voice_brain_module.config import (
-    EMERGENCY_ABORT_WINDOW_SEC, EMERGENCY_ASK_TEXT, EMERGENCY_ASK_WAIT_SEC,
+    EMERGENCY_ABORT_WINDOW_SEC, EMERGENCY_ASK_TEXT,
     EMERGENCY_CANCELLED_TEXT, EMERGENCY_CHANNEL_BY_EMOTION,
-    EMERGENCY_COOLDOWN_SEC, EMERGENCY_GOING_TEXT,
+    EMERGENCY_COOLDOWN_SEC,
 )
 from voice_brain_module.context import ContextPipeline
 from voice_brain_module.memory import UserMemory
@@ -77,10 +77,6 @@ class BrainNode(Node):
         self._emergency = False
         self._emg_lock  = threading.Lock()
         self._emg_llm_busy = False   # 同时最多一个后台判定线程在跑
-
-        # 紧急联络询问窗口："需要我帮你联系家人吗" 问出去之后的等待期
-        self._emg_pending = False
-        self._emg_cancel  = threading.Event()   # 用户明确拒绝时置位，提前唤醒等待
 
         threading.Thread(target=self._work_loop, daemon=True).start()
         threading.Thread(target=self._prewarm_llm, daemon=True).start()
@@ -222,41 +218,33 @@ class BrainNode(Node):
     # ── 紧急联络发起（负面情绪触发）───────────────────────────
 
     def _run_emergency_ask(self, task: dict):
-        """先问一句，等 EMERGENCY_ASK_WAIT_SEC 秒，没被拒绝就开确认窗口。
+        """播报询问 → 即刻开确认窗口 → 等 EMERGENCY_ABORT_WINDOW_SEC 秒。
 
-        确认窗口内麦克风强制开着、免唤醒词——用户说的每句话都进中止判定。
-        窗口到期且未被中止，才真正发 /emergency/initiate。
+        播完立刻发 emergency_confirm（voice_node 强制开麦、brain_node 切到
+        中止判定）。窗口期内用户说的每句话都走中止判定——规则层离线判定"不用"、
+        "我没事"、"别发"等拒绝语，拿不准的交大模型仲裁。窗口到期未被中止才发
+        /emergency/initiate。和外部发起方的流程完全相同。
 
         「为什么无应答照发」：老人可能已经痛得说不出话或失去意识——那恰恰是
-        最需要联络的情况。只有听到**明确拒绝**才作罢。
+        最需要联络的情况。
         """
-        channel = task["channel"]
-        self._emg_cancel.clear()
-        with self._emg_lock:
-            self._emg_pending = True
-        try:
-            self._speak_fixed(EMERGENCY_ASK_TEXT)
-            declined = self._emg_cancel.wait(EMERGENCY_ASK_WAIT_SEC)
-        finally:
-            with self._emg_lock:
-                self._emg_pending = False
-
-        if declined:
-            self.get_logger().warn("用户明确拒绝，取消本次紧急联络")
-            self._speak_fixed(EMERGENCY_CANCELLED_TEXT)
-            return
-
-        # 开确认窗口 → 播告知话术 → 等窗口到期。用户此间说"不用发了"即中止。
-        # 窗口到期时若仍处于紧急态 = 用户没叫停 → 正式发起联络。
+        self._speak_fixed(EMERGENCY_ASK_TEXT)
         self._open_confirm_window()
-        self._speak_fixed(EMERGENCY_GOING_TEXT.get(channel, EMERGENCY_GOING_TEXT["call"]))
-        self._emg_cancel.wait(EMERGENCY_ABORT_WINDOW_SEC)
 
-        with self._emg_lock:
-            still_active = self._emergency
-        if still_active:
-            self._close_confirm_window()
-            self._publish_initiate(task)
+        # 等窗口到期。用户叫停会通过 _publish_abort 关窗并置 _emergency=False。
+        # 创建一个只用在这里的 Event，窗口到期或中止都唤醒。
+        done = threading.Event()
+        deadline = time.time() + EMERGENCY_ABORT_WINDOW_SEC
+        while time.time() < deadline:
+            with self._emg_lock:
+                if not self._emergency:       # 被 _publish_abort 关掉了
+                    self._speak_fixed(EMERGENCY_CANCELLED_TEXT)
+                    return
+            done.wait(timeout=0.2)
+
+        # 窗口到期，未被中止
+        self._close_confirm_window()
+        self._publish_initiate(task)
 
     def _open_confirm_window(self):
         """发布确认信号。voice_node 收到后强制开麦免唤醒词，brain_node 的
@@ -292,20 +280,6 @@ class BrainNode(Node):
         self.get_logger().warn(f"发起紧急联络: {payload}")
         self._initiate_pub.publish(String(data=payload))
 
-    def _handle_ask_response(self, text: str) -> None:
-        """询问窗口内收到的用户语音：只判断是不是明确拒绝。"""
-        decision, why = emg.detect_abort_intent(text)
-        if decision == emg.ABORT:
-            self.get_logger().warn(f"判定为拒绝（{why}）: {text}")
-            self._emg_cancel.set()
-            return
-
-        # 不是拒绝就继续等。这里必须再发一次 continuous：pipeline 每识别一句都会
-        # 自锁轮次闸，不重新放开的话，用户说的第一句话之后麦克风就关了，
-        # 后面再想说"不用"也传不进来。
-        self.get_logger().info(f"询问期间收到（{why}），不构成拒绝: {text}")
-        self._listen_pub.publish(String(data="continuous"))
-
     def _publish_abort(self, utterance: str, detector: str):
         """下发"中止紧急情况"，并收尾紧急态。
 
@@ -331,19 +305,11 @@ class BrainNode(Node):
     # ── 指令处理 ─────────────────────────────────────────────
 
     def _on_command(self, msg: String):
-        # 紧急态走快车道：当场判定并下发，不进工作队列（见模块 docstring）。
-        # 判定完这句话就到此为止——紧急电话正在拨打，机器人不该同时跟用户闲聊，
-        # 既抢扬声器也抢麦克风。
+        # 紧急态走快车道：当场判定并下发，不进工作队列。
         with self._emg_lock:
             in_emergency = self._emergency
-            ask_pending  = self._emg_pending
         if in_emergency:
             self._handle_emergency_utterance(msg.data)
-            return
-        # 询问窗口内：只判断是不是拒绝，不进队列（否则会被大模型当普通对话回复，
-        # 用户说的"不用"就白说了）
-        if ask_pending:
-            self._handle_ask_response(msg.data)
             return
 
         self._work_q.put(msg.data)
